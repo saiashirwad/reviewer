@@ -16,53 +16,53 @@ const ManifestJson = Schema.fromJsonString(Management.Manifest);
 
 type ManifestPaths = { manifest: string; lock: string; temp: string; };
 
-const manifestPathsFor = (baseDir: string) =>
-  Effect.gen(function*() {
-    const path = yield* Path.Path;
-    const base = path.resolve(baseDir);
-    return {
-      manifest: path.join(base, MANIFEST),
-      lock: path.join(base, LOCK),
-      temp: path.join(base, TEMP),
-    };
-  });
+const manifestPathsFor = Effect.fn("Commands.manifestPathsFor")(function*(baseDir: string) {
+  const path = yield* Path.Path;
+  const base = path.resolve(baseDir);
+  return {
+    manifest: path.join(base, MANIFEST),
+    lock: path.join(base, LOCK),
+    temp: path.join(base, TEMP),
+  };
+});
 
 const decodeManifestString = (content: string) =>
   Schema.decodeUnknownEffect(ManifestJson)(content, Management.strictManifestOptions).pipe(
     Effect.mapError(() => new CliError({ message: "Invalid reviewer.json" })),
   );
 
-const readManifestFile = (manifestPath: string) =>
-  Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem;
-    const content = yield* fs.readFileString(manifestPath).pipe(
-      Effect.mapError(() =>
-        new CliError({ message: `Missing ${MANIFEST} in the current directory` })
-      ),
-    );
-    return yield* decodeManifestString(content);
-  });
+const readManifestFile = Effect.fn("Commands.readManifestFile")(function*(manifestPath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const content = yield* fs.readFileString(manifestPath).pipe(
+    Effect.mapError(() =>
+      new CliError({
+        message:
+          `Cannot read ${MANIFEST}; run from the project directory and check file permissions`,
+      })
+    ),
+  );
+  return yield* decodeManifestString(content);
+});
 
 export const loadManifest = Effect.fn("Commands.loadManifest")(function*(options?: CommandBase) {
   const paths = yield* manifestPathsFor(resolveBase(options));
   return yield* readManifestFile(paths.manifest);
 });
 
-const writeManifestAtomic = (
+const writeManifestAtomic = Effect.fn("Commands.writeManifestAtomic")(function*(
   manifestPath: string,
   tempPath: string,
   manifest: Management.Manifest,
-) =>
-  Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem;
-    const json = JSON.stringify(manifest, null, 2) + "\n";
-    yield* fs.writeFileString(tempPath, json).pipe(
-      Effect.mapError(() => new CliError({ message: `Failed to write ${MANIFEST}` })),
-    );
-    yield* fs.rename(tempPath, manifestPath).pipe(
-      Effect.mapError(() => new CliError({ message: `Failed to save ${MANIFEST}` })),
-    );
-  });
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const json = JSON.stringify(manifest, null, 2) + "\n";
+  yield* fs.writeFileString(tempPath, json).pipe(
+    Effect.mapError(() => new CliError({ message: `Failed to write ${MANIFEST}` })),
+  );
+  yield* fs.rename(tempPath, manifestPath).pipe(
+    Effect.mapError(() => new CliError({ message: `Failed to save ${MANIFEST}` })),
+  );
+});
 
 const isEexist = (error: unknown): boolean =>
   typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
@@ -110,9 +110,9 @@ const ghEnv = (token: Redacted.Redacted<string>): Record<string, string> => {
 type GhRunOptions = { paginate?: boolean; method?: string; fields?: ReadonlyArray<string>; };
 
 const CliPull = Schema.Struct({
-  state: Schema.String,
-  draft: Schema.optionalKey(Schema.Boolean),
-  head: Schema.Struct({ sha: Schema.String }),
+  state: Schema.Literals(["open", "closed"]),
+  draft: Schema.Boolean,
+  head: Schema.Struct({ sha: Schema.NonEmptyString }),
 });
 
 const Hook = Schema.Struct({
@@ -138,123 +138,26 @@ const ReviewPages = Schema.Array(
   Schema.Array(Schema.Struct({ body: Schema.NullOr(Schema.String) })),
 );
 
-type GhJsonSchema =
-  | typeof HookPages
-  | typeof GhUser
-  | typeof RepoMeta
-  | typeof CliPull
-  | typeof ReviewPages
-  | typeof CommentResponse;
-
 type GhRun = (endpoint: string, options?: GhRunOptions) => Effect.Effect<string, CliError>;
 
-function ghDecode(
-  schema: typeof HookPages,
-  output: string,
-  message?: string,
-): Effect.Effect<HookPagesType, CliError>;
-function ghDecode(
-  schema: typeof GhUser,
-  output: string,
-  message?: string,
-): Effect.Effect<typeof GhUser.Type, CliError>;
-function ghDecode(
-  schema: typeof RepoMeta,
-  output: string,
-  message?: string,
-): Effect.Effect<typeof RepoMeta.Type, CliError>;
-function ghDecode(
-  schema: typeof CliPull,
-  output: string,
-  message?: string,
-): Effect.Effect<typeof CliPull.Type, CliError>;
-function ghDecode(
-  schema: typeof ReviewPages,
-  output: string,
-  message?: string,
-): Effect.Effect<typeof ReviewPages.Type, CliError>;
-function ghDecode(
-  schema: typeof CommentResponse,
-  output: string,
-  message?: string,
-): Effect.Effect<typeof CommentResponse.Type, CliError>;
-function ghDecode(
-  schema: GhJsonSchema,
+const ghDecode = <S extends Schema.Constraint>(
+  schema: S,
   output: string,
   message = "Unexpected response from GitHub",
-): Effect.Effect<unknown, CliError> {
-  return Effect.try({
-    try: () => Schema.decodeUnknownSync(schema)(JSON.parse(output) as unknown),
-    catch: () => new CliError({ message }),
-  });
-}
+) =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(output).pipe(
+    Effect.mapError(() => new CliError({ message })),
+  );
 
-function ghJson(
+const ghJson = <S extends Schema.Constraint>(
   runGh: GhRun,
   endpoint: string,
-  schema: typeof HookPages,
+  schema: S,
   options?: GhRunOptions,
-): Effect.Effect<HookPagesType, CliError>;
-function ghJson(
-  runGh: GhRun,
-  endpoint: string,
-  schema: typeof GhUser,
-  options?: GhRunOptions,
-): Effect.Effect<typeof GhUser.Type, CliError>;
-function ghJson(
-  runGh: GhRun,
-  endpoint: string,
-  schema: typeof RepoMeta,
-  options?: GhRunOptions,
-): Effect.Effect<typeof RepoMeta.Type, CliError>;
-function ghJson(
-  runGh: GhRun,
-  endpoint: string,
-  schema: typeof CliPull,
-  options?: GhRunOptions,
-): Effect.Effect<typeof CliPull.Type, CliError>;
-function ghJson(
-  runGh: GhRun,
-  endpoint: string,
-  schema: typeof ReviewPages,
-  options?: GhRunOptions,
-): Effect.Effect<typeof ReviewPages.Type, CliError>;
-function ghJson(
-  runGh: GhRun,
-  endpoint: string,
-  schema: typeof CommentResponse,
-  options?: GhRunOptions,
-): Effect.Effect<typeof CommentResponse.Type, CliError>;
-function ghJson(
-  runGh: GhRun,
-  endpoint: string,
-  schema: GhJsonSchema,
-  options?: GhRunOptions,
-): Effect.Effect<unknown, CliError> {
-  return Effect.gen(function*() {
-    const output = yield* runGh(endpoint, options);
-    if (schema === HookPages) {
-      return yield* ghDecode(HookPages, output);
-    }
-    if (schema === GhUser) {
-      return yield* ghDecode(GhUser, output);
-    }
-    if (schema === RepoMeta) {
-      return yield* ghDecode(RepoMeta, output);
-    }
-    if (schema === CliPull) {
-      return yield* ghDecode(CliPull, output);
-    }
-    if (schema === ReviewPages) {
-      return yield* ghDecode(ReviewPages, output);
-    }
-    return yield* ghDecode(CommentResponse, output);
-  });
-}
+) => runGh(endpoint, options).pipe(Effect.flatMap((output) => ghDecode(schema, output)));
 
 type GithubClient = {
   readonly runGh: GhRun;
-  readonly env: Record<string, string>;
   readonly noBody: (endpoint: string) => Effect.Effect<void, CliError>;
   readonly postField: (
     endpoint: string,
@@ -282,7 +185,6 @@ const makeGithubClient = Effect.fn("Commands.makeGithubClient")(function*(
   };
   const client = {
     runGh,
-    env,
     noBody: (endpoint: string) =>
       Effect.gen(function*() {
         const output = yield* runGh(endpoint);
@@ -291,20 +193,7 @@ const makeGithubClient = Effect.fn("Commands.makeGithubClient")(function*(
         }
       }),
     postField: (endpoint: string, field: string, value: string) =>
-      runtime.run(
-        "gh",
-        [
-          "api",
-          "--hostname",
-          "github.com",
-          endpoint,
-          "--method",
-          "POST",
-          "--field",
-          `${field}=${value}`,
-        ],
-        { env },
-      ),
+      runGh(endpoint, { method: "POST", fields: ["--field", `${field}=${value}`] }),
   } satisfies GithubClient;
   return client;
 });
@@ -442,8 +331,8 @@ export const reposAdd = Effect.fn("Commands.reposAdd")(function*(
       if (existed) {
         yield* Console.log(`Configured locally (unchanged): ${label}`);
       } else {
-        yield* Console.log(`Configured locally: ${label} (run reviewer deploy to enroll)`);
         yield* writeManifestAtomic(paths.manifest, paths.temp, next);
+        yield* Console.log(`Configured locally: ${label} (run pnpm reviewer deploy to enroll)`);
       }
       if (deploy) {
         yield* alchemyDeploy(next);
@@ -466,8 +355,10 @@ export const reposRemove = Effect.fn("Commands.reposRemove")(function*(
       if (next.repos.length === current.repos.length) {
         yield* Console.log(`Configured locally (unchanged): ${label}`);
       } else {
-        yield* Console.log(`Removed locally: ${label} (run reviewer deploy to update enrollment)`);
         yield* writeManifestAtomic(paths.manifest, paths.temp, next);
+        yield* Console.log(
+          `Removed locally: ${label} (run pnpm reviewer deploy to update enrollment)`,
+        );
       }
       if (deploy) {
         yield* alchemyDeploy(next);
@@ -476,19 +367,10 @@ export const reposRemove = Effect.fn("Commands.reposRemove")(function*(
     }));
 });
 
-export const deployManifest = Effect.fn("Commands.deployManifest")(function*(
-  manifest?: Management.Manifest,
-  options?: CommandBase,
-) {
-  if (manifest !== undefined) {
-    return yield* alchemyDeploy(manifest);
-  }
+export const deployCommand = Effect.fn("Commands.deploy")(function*(options?: CommandBase) {
   const baseDir = resolveBase(options);
   yield* withManifestLock(baseDir, (locked) => alchemyDeploy(locked));
-});
-
-export const deployCommand = Effect.fn("Commands.deploy")(function*(options?: CommandBase) {
-  yield* deployManifest(undefined, options);
+  yield* Console.log("Deploy completed; run pnpm reviewer status to verify webhooks");
 });
 
 export const statusCommand = Effect.fn("Commands.status")(function*(options?: CommandBase) {
@@ -549,8 +431,8 @@ export const statusCommand = Effect.fn("Commands.status")(function*(options?: Co
   }
 });
 
-const authorizeRequest = (gh: GithubClient, owner: string, repository: string, login: string) =>
-  Effect.gen(function*() {
+const authorizeRequest = Effect.fn("Commands.authorizeRequest")(
+  function*(gh: GithubClient, owner: string, repository: string, login: string) {
     if (login.toLowerCase() === owner.toLowerCase()) {
       return;
     }
@@ -572,7 +454,8 @@ const authorizeRequest = (gh: GithubClient, owner: string, repository: string, l
           `Cannot confirm permission for ${login} on ${owner}/${repository}; post /review on GitHub directly if you are trusted`,
       }),
     );
-  });
+  },
+);
 
 const skipPull = (number: number, reason: string) =>
   Console.log(`Skipped pull request #${number}: ${reason}`);
@@ -675,7 +558,11 @@ export const requestCommand = Effect.fn("Commands.request")(function*(
       )
     ),
   );
-  const comment = yield* ghDecode(CommentResponse, responseJson);
+  const comment = yield* ghDecode(
+    CommentResponse,
+    responseJson,
+    "GitHub returned an unexpected comment response; check the PR conversation before retrying",
+  );
   yield* Console.log(`Request submitted: ${comment.html_url}`);
 });
 

@@ -5,7 +5,7 @@ import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  deployManifest,
+  deployCommand,
   expectedHookUrl,
   loadManifest,
   reposAdd,
@@ -98,7 +98,7 @@ it.effect("deploy passes pinned alchemy args without secrets in argv", () =>
       let captured:
         | { command: string; args: ReadonlyArray<string>; env?: RunOptions["env"]; }
         | undefined;
-      yield* deployManifest(undefined, { baseDir: dir }).pipe(
+      yield* deployCommand({ baseDir: dir }).pipe(
         Effect.provide(
           Layer.mergeAll(
             baseLayers,
@@ -135,7 +135,7 @@ it.effect("deploy failure leaves reviewer.json intact", () =>
     Effect.gen(function*() {
       yield* writeManifest(dir);
       const before = yield* Effect.tryPromise(() => readFile(join(dir, "reviewer.json"), "utf8"));
-      const error = yield* deployManifest(undefined, { baseDir: dir }).pipe(
+      const error = yield* deployCommand({ baseDir: dir }).pipe(
         Effect.provide(
           Layer.mergeAll(
             baseLayers,
@@ -183,6 +183,41 @@ it.effect("manifest lock conflicts and releases after success", () =>
         yield* Effect.tryPromise(() => released.close());
         yield* Effect.tryPromise(() => rm(join(dir, "reviewer.json.lock")));
       }
+    }).pipe(Effect.provide(baseLayers))
+  ));
+
+it.effect("add and deploy hold the lock together and preserve edits after deployment failure", () =>
+  withDir((dir) =>
+    Effect.gen(function*() {
+      yield* writeManifest(dir);
+      const failure = yield* reposAdd("example/new", true, { baseDir: dir }).pipe(
+        Effect.provide(Layer.mergeAll(
+          NodeServices.layer,
+          runtimeLayer(() =>
+            Effect.gen(function*() {
+              const conflict = yield* reposAdd("example/interference", false, { baseDir: dir })
+                .pipe(Effect.match({
+                  onFailure: (error) => error.message,
+                  onSuccess: () => "unexpected lock success",
+                }));
+              expect(conflict).toContain("reviewer.json.lock");
+              return yield* new CliError({ message: "simulated deployment failure" });
+            }).pipe(Effect.provide(baseLayers))
+          ),
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              GITHUB_TOKEN: "test-token",
+              OPENCODE_API_KEY: "test-key",
+            }),
+          ),
+        )),
+        Effect.flip,
+      );
+      expect(failure.message).toContain("Deploy failed");
+      const manifest = yield* loadManifest({ baseDir: dir });
+      expect(manifest.repos.map((repo) => repo.repository)).toEqual(["repo", "new"]);
+      yield* reposAdd("example/after-failure", false, { baseDir: dir });
+      expect((yield* loadManifest({ baseDir: dir })).repos).toHaveLength(3);
     }).pipe(Effect.provide(baseLayers))
   ));
 
@@ -280,6 +315,9 @@ it.effect("request refuses moved head and malformed github json", () =>
       const badJson = yield* requestCommand("example/repo#1", { baseDir: dir }).pipe(
         Effect.provide(
           ghMock((args) => {
+            if (args.some((arg) => arg.endsWith("/hooks"))) {
+              return Effect.succeed(hookPage());
+            }
             if (args.includes("user")) {
               return Effect.succeed(JSON.stringify({ login: "example" }));
             }
@@ -289,6 +327,9 @@ it.effect("request refuses moved head and malformed github json", () =>
         Effect.flip,
       );
       expect(badJson).toBeInstanceOf(CliError);
+      if (badJson instanceof CliError) {
+        expect(badJson.message).toBe("Unexpected response from GitHub");
+      }
     })
   ));
 
@@ -348,12 +389,14 @@ it.effect("status continues after unavailable health and ignores non-webhook hoo
   withDir((dir) =>
     Effect.gen(function*() {
       yield* writeManifest(dir);
+      let hooksChecked = false;
       const error = yield* statusCommand({ baseDir: dir }).pipe(
         Effect.provide(
           ghMock(
             (args) => {
               const endpoint = args.find((arg) => arg.startsWith("repos/")) ?? "";
               if (endpoint.endsWith("/hooks")) {
+                hooksChecked = true;
                 return Effect.succeed(hookPage({ url: "https://other.example/hook" }));
               }
               return Effect.fail(new CliError({ message: "unexpected" }));
@@ -364,6 +407,10 @@ it.effect("status continues after unavailable health and ignores non-webhook hoo
         Effect.flip,
       );
       expect(error).toBeInstanceOf(CliError);
+      expect(hooksChecked).toBe(true);
+      if (error instanceof CliError) {
+        expect(error.message).toContain("Status checks failed");
+      }
     })
   ));
 
@@ -389,5 +436,60 @@ it.effect("status reports missing webhook events", () =>
         Effect.flip,
       );
       expect(error).toBeInstanceOf(CliError);
+    })
+  ));
+
+it.effect("request preflight refuses drafts, missing hooks, and PRs that close during checks", () =>
+  withDir((dir) =>
+    Effect.gen(function*() {
+      yield* writeManifest(dir);
+      for (
+        const scenario of [
+          "draft",
+          "draft-after-check",
+          "closed-after-check",
+          "missing-hook",
+          "missing-events",
+        ]
+      ) {
+        let pullCalls = 0;
+        let postCalls = 0;
+        const outcome = yield* requestCommand("example/repo#1", { baseDir: dir }).pipe(
+          Effect.provide(ghMock((args) => {
+            if (args.includes("POST")) {
+              postCalls += 1;
+              return Effect.succeed(
+                JSON.stringify({
+                  html_url: "https://github.com/example/repo/pull/1#issuecomment-1",
+                }),
+              );
+            }
+            const endpoint = args.find((arg) => arg.startsWith("repos/")) ?? "";
+            if (endpoint.endsWith("/hooks")) {
+              return Effect.succeed(
+                scenario === "missing-hook"
+                  ? "[[]]"
+                  : hookPage({ events: scenario === "missing-events" ? ["pull_request"] : ["*"] }),
+              );
+            }
+            if (args.includes("user")) return Effect.succeed('{"login":"example"}');
+            if (endpoint.includes("/reviews")) return Effect.succeed("[[]]");
+            if (endpoint.includes("/pulls/")) {
+              pullCalls += 1;
+              return Effect.succeed(JSON.stringify({
+                state: scenario === "closed-after-check" && pullCalls > 1 ? "closed" : "open",
+                draft: scenario === "draft" || (scenario === "draft-after-check" && pullCalls > 1),
+                head: { sha: "abc123" },
+              }));
+            }
+            return Effect.die("Unexpected API call");
+          })),
+          Effect.match({ onSuccess: () => "skipped", onFailure: (error) => error.message }),
+        );
+        expect(postCalls).toBe(0);
+        if (scenario.startsWith("missing")) {
+          expect(outcome).toContain("No active enrollment webhook");
+        } else expect(outcome).toBe("skipped");
+      }
     })
   ));
