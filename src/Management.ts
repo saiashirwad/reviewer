@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import type { ParseOptions } from "effect/SchemaAST";
+import { RepoFile } from "./Settings.ts";
 
 export const strictManifestOptions: ParseOptions = { onExcessProperty: "error" };
 
@@ -57,25 +58,19 @@ export const PullTarget = Schema.Struct({
 });
 export type PullTarget = typeof PullTarget.Type;
 
-const RepoManifestEntry = Schema.Struct({
-  owner: OwnerName,
-  repository: RepositoryName,
-  model: Schema.optionalKey(Schema.NonEmptyString),
-  guidance: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(8_000))),
-  exclude: Schema.optionalKey(Schema.Array(Schema.String)),
-  maxCostUsd: Schema.optionalKey(
-    Schema.Number.check(Schema.isBetween({ minimum: 0.01, maximum: 5 })),
-  ),
-});
+const settingOverrides = {
+  model: RepoFile.fields.model,
+  guidance: RepoFile.fields.guidance,
+  exclude: RepoFile.fields.exclude,
+  maxCostUsd: RepoFile.fields.maxCostUsd,
+};
+
+const RepoManifestEntry = Schema.Struct({ ...RepoRef.fields, ...settingOverrides });
 export type RepoManifestEntry = typeof RepoManifestEntry.Type;
 
 export const Manifest = Schema.Struct({
+  ...settingOverrides,
   model: Schema.NonEmptyString,
-  guidance: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(8_000))),
-  exclude: Schema.optionalKey(Schema.Array(Schema.String)),
-  maxCostUsd: Schema.optionalKey(
-    Schema.Number.check(Schema.isBetween({ minimum: 0.01, maximum: 5 })),
-  ),
   repos: Schema.Array(RepoManifestEntry),
   deployment: Schema.Struct({
     profile: SafeIdentifier,
