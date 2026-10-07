@@ -1,15 +1,4 @@
-import {
-  Cause,
-  Config,
-  ConfigProvider,
-  Context,
-  Effect,
-  Exit,
-  Layer,
-  Option,
-  Redacted,
-  Schema,
-} from "effect";
+import { Config, Context, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { spawn } from "node:child_process";
 
 const STDOUT_MAX_BYTES = 1_048_576;
@@ -20,6 +9,10 @@ export class CliError extends Schema.TaggedError<CliError>()("CliError", {
 }) {}
 
 const commandFailed = new CliError({ message: "Command failed" });
+
+const ghLoginUnavailable = new CliError({
+  message: "GitHub login unavailable; run gh auth login --hostname github.com or set GITHUB_TOKEN",
+});
 
 const isEnoent = (error: unknown): boolean =>
   typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
@@ -101,6 +94,7 @@ const spawnCommand = Effect.fn("Runtime.run")(function*(
             const piece = typeof chunk === "string" ? chunk : chunk.toString("utf8");
             stdoutBytes += Buffer.byteLength(piece, "utf8");
             if (stdoutBytes > STDOUT_MAX_BYTES) {
+              finish(Effect.fail(commandFailed));
               child.kill();
               return;
             }
@@ -109,9 +103,7 @@ const spawnCommand = Effect.fn("Runtime.run")(function*(
         }
 
         if (!inherit && child.stderr !== null) {
-          child.stderr.on("data", () => {
-            // stderr is captured but never surfaced in errors
-          });
+          child.stderr.resume();
         }
 
         return Effect.sync(() => {
@@ -128,26 +120,36 @@ const spawnCommand = Effect.fn("Runtime.run")(function*(
 
 const checkHealth = Effect.fn("Runtime.health")(function*(url: string) {
   const target = `${new URL(url).origin}/`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, HEALTH_TIMEOUT_MS);
 
-  return yield* Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(target, { signal: controller.signal });
-      if (!response.ok) {
-        return false;
-      }
-      const body = (await response.text()).trim();
-      return body === "reviewer";
-    },
-    catch: () => commandFailed,
-  }).pipe(
-    Effect.ensuring(Effect.sync(() => {
+  return yield* Effect.callback<boolean, CliError>((resume, interruptSignal) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, HEALTH_TIMEOUT_MS);
+    const onInterrupt = () => {
+      controller.abort();
+    };
+    interruptSignal.addEventListener("abort", onInterrupt);
+
+    void fetch(target, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          resume(Effect.succeed(false));
+          return;
+        }
+        const body = (await response.text()).trim();
+        resume(Effect.succeed(body === "reviewer"));
+      })
+      .catch(() => {
+        resume(Effect.fail(commandFailed));
+      });
+
+    return Effect.sync(() => {
       clearTimeout(timeout);
-    })),
-  );
+      interruptSignal.removeEventListener("abort", onInterrupt);
+      controller.abort();
+    });
+  });
 });
 
 export interface RuntimeInterface {
@@ -174,17 +176,15 @@ export const layer = Layer.succeed(Runtime, {
 export const loadEnvironment = (
   path?: string,
 ): Effect.Effect<void, CliError> =>
-  Effect.gen(function*() {
-    const exit = yield* Effect.exit(Effect.sync(() => process.loadEnvFile(path)));
-    if (!Exit.isFailure(exit)) {
-      return;
-    }
-    const cause = Cause.squash(exit.cause);
-    if (isEnoent(cause)) {
-      return;
-    }
-    return yield* Effect.fail(new CliError({ message: "Failed to load environment file" }));
-  });
+  Effect.try({
+    try: () => {
+      process.loadEnvFile(path);
+    },
+    catch: (cause: unknown): CliError | "ENOENT" =>
+      isEnoent(cause) ? "ENOENT" : new CliError({ message: "Failed to load environment file" }),
+  }).pipe(
+    Effect.catchIf((error) => error === "ENOENT", () => Effect.void),
+  );
 
 const nonEmptyRedacted = (
   value: Redacted.Redacted<string>,
@@ -213,6 +213,7 @@ export const githubToken: Effect.Effect<Redacted.Redacted<string>, CliError, Run
     const runtime = yield* Runtime;
     const token = yield* runtime.run("gh", ["auth", "token", "--hostname", "github.com"]).pipe(
       Effect.map((output) => output.trim()),
+      Effect.mapError(() => ghLoginUnavailable),
     );
     if (token.length === 0) {
       return yield* Effect.fail(
@@ -234,5 +235,3 @@ export const opencodeKey: Effect.Effect<Redacted.Redacted<string>, CliError> = C
     nonEmptyRedacted(key, "OPENCODE_API_KEY is set but empty; check your .env OPENCODE_API_KEY")
   ),
 );
-
-export const configFromEnv = ConfigProvider.layer(ConfigProvider.fromEnv());
