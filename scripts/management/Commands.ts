@@ -298,7 +298,7 @@ const alchemyDeploy = Effect.fn("Commands.alchemyDeploy")(function*(manifest: Ma
         Effect.fail(
           new CliError({
             message:
-              "Deploy failed; local reviewer.json changes are saved. Run reviewer status, then retry with reviewer deploy",
+              "Deploy failed; reviewer.json is retained. Alchemy may have applied partial changes. Run pnpm reviewer status, then retry pnpm reviewer deploy",
           }),
         )
       ),
@@ -353,7 +353,7 @@ export const reposRemove = Effect.fn("Commands.reposRemove")(function*(
     Effect.gen(function*() {
       const next = Management.removeRepo(current, ref);
       if (next.repos.length === current.repos.length) {
-        yield* Console.log(`Configured locally (unchanged): ${label}`);
+        yield* Console.log(`Not locally configured (unchanged): ${label}`);
       } else {
         yield* writeManifestAtomic(paths.manifest, paths.temp, next);
         yield* Console.log(
