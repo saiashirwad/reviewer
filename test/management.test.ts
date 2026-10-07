@@ -114,6 +114,7 @@ it.effect("manifest rejects malformed deployment URLs and nested setting typos",
         "https://example.com/path",
         "https://example.com/?query=1",
         "https://example.com/#fragment",
+        "https://exam\nple.com",
       ]
     ) {
       const error = yield* Effect.flip(decodeManifest({
@@ -127,6 +128,11 @@ it.effect("manifest rejects malformed deployment URLs and nested setting typos",
       repos: [{ owner: "acme", repository: "widget", maxCostUSD: 0.5 }],
     }));
     expect(error._tag).toBe("SchemaError");
+    const invalidOwner = yield* Effect.flip(decodeManifest({
+      ...sampleManifest,
+      repos: [{ owner: "acme\n", repository: "widget" }],
+    }));
+    expect(invalidOwner._tag).toBe("SchemaError");
   }));
 
 it.effect("pull numbers must be positive safe integers", () =>

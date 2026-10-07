@@ -5,19 +5,24 @@ import { RepoFile } from "./Settings.ts";
 export const strictManifestOptions: ParseOptions = { onExcessProperty: "error" };
 
 const OwnerName = Schema.String.check(
+  Schema.isTrimmed(),
   Schema.isMaxLength(39),
   Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/),
 );
 
 const RepositoryName = Schema.String.check(
+  Schema.isTrimmed(),
   Schema.isPattern(/^(?!\.$)(?!\.\.$)[A-Za-z0-9._-]+$/),
 );
 
 const SafeIdentifier = Schema.String.check(
+  Schema.isTrimmed(),
   Schema.isPattern(/^[a-zA-Z][a-zA-Z0-9_-]*$/),
 );
 
 const HttpsOrigin = Schema.String.check(
+  Schema.isTrimmed(),
+  Schema.isPattern(/^\S+$/),
   Schema.makeFilter((value) => {
     try {
       const url = new URL(value);
