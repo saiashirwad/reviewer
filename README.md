@@ -20,17 +20,42 @@ pnpm fmt:check
 `pnpm check` runs typecheck, oxlint, dprint's formatting check, and the Effect
 Vitest suite. `pnpm fmt` applies the pinned TypeScript, JSON, Markdown, and YAML
 formatters. The lockfile and generated local artifacts are excluded. HTTP and AI
-APIs already used by the application are explicitly allowed in the Effect plugin;
+APIs used by the application and CLI are explicitly allowed in the Effect plugin;
 other unstable APIs still produce diagnostics.
+
+## Set up management commands
+
+Copy `.env.example` to `.env` and replace the OpenCode Go API key:
+
+```sh
+cp -n .env.example .env
+gh auth login --hostname github.com
+pnpm exec alchemy profile show --profile admin
+pnpm reviewer --help
+```
+
+The copy command leaves an existing `.env` intact. If the Cloudflare profile
+needs setup, run `pnpm exec alchemy profile edit`.
+`.env` is ignored by Git. Shell variables override `.env`. The CLI uses
+`GITHUB_TOKEN` when supplied and otherwise reuses `gh` authentication for
+`github.com`. Tokens are passed to child processes as environment variables,
+not command arguments.
+
+`reviewer.json` stores the repository list, review defaults, and deployment
+target. The current target is the existing `admin` profile and `prod` stage.
+Keep that target for production updates. A different profile or stage can
+create a separate stack rather than update production.
+If you deliberately change targets, update `deployment.url` from Alchemy's
+output before you use `status` or `request`.
 
 ## Test a review without posting
 
-Export `OPENCODE_API_KEY` in your shell. Then run:
+Set `OPENCODE_API_KEY` in `.env` or your shell. Then run:
 
 ```sh
 pnpm check
 pnpm smoke
-GITHUB_TOKEN="$(gh auth token)" pnpm review 'saiashirwad/parserator#23'
+pnpm review https://github.com/saiashirwad/parserator/pull/23
 ```
 
 `pnpm smoke` reviews a planted arithmetic bug and fails unless the model records
@@ -49,33 +74,44 @@ OpenCode Go usage per review, not an additional subscription charge.
 ## Enroll a repository
 
 Enrollment creates a GitHub webhook and enables automatic review posts. There is
-no enrollment UI or GitHub App. The deployed allowlist is `reviewer.config.ts`.
+no GitHub App installation. Add a repository and deploy in one command:
 
-1. Add each repository to `reviewer.config.ts`:
+```sh
+pnpm reviewer repos add your-org/your-repo --deploy
+pnpm reviewer status
+```
 
-   ```ts
-   repos: [
-     { owner: "saiashirwad", repository: "parserator" },
-     { owner: "your-org", repository: "your-repo", maxCostUsd: 0.5 },
-   ];
-   ```
+To stage several changes before one deployment, omit `--deploy`:
 
-2. Export `OPENCODE_API_KEY` and `GITHUB_TOKEN` in the deployment shell.
-3. Check your credentials with `pnpm exec alchemy profile show --profile admin`.
-   If you need a new profile, use `pnpm exec alchemy profile edit`.
-4. Redeploy the production stack:
+```sh
+pnpm reviewer repos add your-org/first-repo
+pnpm reviewer repos add https://github.com/your-org/second-repo
+pnpm reviewer repos list
+pnpm reviewer deploy
+```
 
-   ```sh
-   GITHUB_TOKEN="$(gh auth token)" pnpm exec alchemy deploy --profile admin --stage prod --yes
-   ```
+The CLI validates `reviewer.json` and preserves existing per-repository settings.
+Repeated additions and removals are safe. Local edits do not enroll a repository
+until deployment succeeds. If deployment fails, the edits remain available for
+retry. Alchemy can apply part of a failed deployment, so check `status` after a
+failure rather than assume GitHub is unchanged.
 
-Use the same profile and stage for later deployments. The `admin` profile is the
-connected profile on this machine. Removing an entry and redeploying removes its
-webhook. An empty list disables enrollment but keeps the Worker deployed.
+`pnpm run deploy` uses the same management command. Removing a repository and
+deploying deletes its managed webhook:
+
+```sh
+pnpm reviewer repos remove your-org/your-repo --deploy
+```
+
+An empty repository list keeps the Worker deployed without enrollment. `status`
+checks the configured Worker URL and GitHub webhooks for locally listed
+repositories. It does not enumerate repositories removed from the local list or
+prove that a model review can complete.
 
 Alchemy reads both credentials with Effect `Config.Redacted` during Worker
 initialization and binds them as Cloudflare secrets. It generates and retains a
-webhook signing secret in its state. No API key is written into repository files.
+webhook signing secret in its state. API keys stay in your shell or ignored
+`.env`, not in committed configuration.
 
 The GitHub token needs repository read access, pull-request write access, and
 webhook administration access. Reviews post as the token's GitHub user. This
@@ -91,6 +127,28 @@ Pushes enqueue a review. A `/review` comment from an owner, member, or collabora
 also enqueues one. A marker on an existing review suppresses repeat posting for
 that head SHA. Markers are best-effort duplicate detection, not exactly-once
 GitHub writes. Stale heads are checked before publication.
+
+## Request a deployed review
+
+Use a PR URL or quote `owner/repo#number`:
+
+```sh
+pnpm reviewer request https://github.com/saiashirwad/parserator/pull/23
+pnpm reviewer request 'saiashirwad/parserator#23'
+```
+
+The command checks enrollment, the webhook, and the PR before it creates a new
+`/review` conversation comment. It reports closed or draft PRs and heads that
+already have a review marker without posting another request. A posted request
+means GitHub accepted the comment, not that the review has finished. The Worker
+still checks repository settings, exclusions, budgets, and the head before
+publication.
+
+You can also write `/review` directly in GitHub. Only new comments from an owner,
+member, or collaborator trigger the Worker. Editing a comment does not trigger
+another review. A new commit is required to review an already-reviewed head.
+`status` and `request` need permission to read repository webhooks. If your token
+can comment but cannot read webhooks, write `/review` in GitHub instead.
 
 ## Configure a repository
 
@@ -111,9 +169,11 @@ chat completions and need a price entry in `src/Spending.ts`.
 
 ## Current verification limits
 
-`pnpm check` runs TypeScript and 10 behavior tests with `@effect/vitest`. The
+`pnpm check` runs TypeScript and behavior tests with `@effect/vitest`. The
 tests cover archive extraction, source snapshots, exclusions, report rendering,
-GitHub review pagination, Responses transport, and budget boundaries.
+GitHub review pagination, Responses transport, budget boundaries, and management
+commands. CLI tests use local adapters for deployment and comment writes; they
+do not deploy or post to GitHub.
 
 The live Muse smoke test passes. A full dry run of parserator#23 at `da23550`
 reviewed all 21 changed files and completed in about 157 seconds. It reported the

@@ -114,7 +114,7 @@ it.effect("passes the saved production target and credentials through the real d
     expect(dotenvDeployment.key).toBe("dotenv-test-key");
   }));
 
-it.effect("does not post requests for closed PRs or heads reviewed on a later page", () =>
+it.effect("posts requests only for open, unreviewed PRs through the real executable", () =>
   Effect.gen(function*() {
     const cwd = yield* sandbox;
     const executable = join(cwd, "gh");
@@ -128,9 +128,10 @@ it.effect("does not post requests for closed PRs or heads reviewed on a later pa
           + `fs.appendFileSync('calls.jsonl', JSON.stringify(args)+'\\n');\n`
           + `const endpoint = args.find(a => a.startsWith('repos/')) ?? '';\n`
           + `let result;\n`
-          + `if(endpoint.endsWith('/hooks')) result = [[{active:true,events:['pull_request','issue_comment'],config:{url:'https://example.workers.dev/__alchemy/github/example/existing'}}]];\n`
-          + `else if(endpoint.includes('/reviews')) result = [[{body:'other review'}],[{body:'<!-- reviewer:head123 -->'}]];\n`
-          + `else if(endpoint.includes('/pulls/')) result = {state:process.env.PR_STATE,draft:false,head:{sha:'head123'},base:{sha:'base123'}};\n`
+          + `if(args.includes('POST')) {fs.writeFileSync('comment.json',JSON.stringify({args,gh:process.env.GH_TOKEN,github:process.env.GITHUB_TOKEN}));result={html_url:'https://github.com/example/existing/pull/1#issuecomment-123'};}\n`
+          + `else if(endpoint.endsWith('/hooks')) result = [[{active:true,events:['pull_request','issue_comment'],config:{url:'https://example.workers.dev/__alchemy/github/example/existing'}}]];\n`
+          + `else if(endpoint.includes('/reviews')) result = process.env.PR_STATE==='fresh'?[[]]:[[{body:'other review'}],[{body:'<!-- reviewer:head123 -->'}]];\n`
+          + `else if(endpoint.includes('/pulls/')) result = {state:process.env.PR_STATE==='fresh'?'open':process.env.PR_STATE,draft:false,head:{sha:'head123'},base:{sha:'base123'}};\n`
           + `else if(args.includes('user')) result = {login:'example'};\n`
           + `else if(endpoint === 'repos/example/existing') result = {permissions:{push:true,admin:true},owner:{login:'example',type:'User'}};\n`
           + `else {console.error('Unexpected GitHub operation');process.exit(1);}\n`
@@ -155,4 +156,25 @@ it.effect("does not post requests for closed PRs or heads reviewed on a later pa
     expect(calls).not.toContain('"POST"');
     expect(calls).not.toContain("/comments");
     expect(calls).toContain("/reviews");
+    const result = yield* Effect.tryPromise(() =>
+      execute(process.execPath, [cli, "request", "https://github.com/example/existing/pull/1"], {
+        cwd,
+        env: {
+          ...process.env,
+          PATH: `${cwd}:${process.env.PATH ?? ""}`,
+          GITHUB_TOKEN: "test-token",
+          PR_STATE: "fresh",
+        },
+      })
+    );
+    const comment = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
+      args: Schema.Array(Schema.String),
+      gh: Schema.String,
+      github: Schema.String,
+    })))(yield* Effect.tryPromise(() => readFile(join(cwd, "comment.json"), "utf8")));
+    expect(comment.args.slice(-4)).toEqual(["--method", "POST", "--field", "body=/review"]);
+    expect(comment.gh).toBe("test-token");
+    expect(comment.github).toBe("test-token");
+    expect(result.stdout).toContain("Request submitted:");
+    expect(result.stdout).not.toContain("test-token");
   }));
