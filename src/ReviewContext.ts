@@ -7,19 +7,8 @@ import {
   ReviewSource,
 } from "@yielded/agent-pr-review/review-repository";
 import { Effect, Layer, Option } from "effect";
+import type { Revision, Snapshot } from "./snapshot/types.ts";
 
-export type Revision = "base" | "head";
-
-/** Read-only access to the two revisions under review. Paths are sorted. */
-export interface Snapshot {
-  readonly paths: (revision: Revision) => Effect.Effect<ReadonlyArray<string>, ReviewContextError>;
-  readonly read: (
-    revision: Revision,
-    path: string,
-  ) => Effect.Effect<Option.Option<string>, ReviewContextError>;
-}
-
-// Bounds mirror the reviewer's tool contracts in @yielded/agent-pr-review.
 const MAX_LISTED_PATHS = 100;
 const SEARCH_FILES_PER_PAGE = 20;
 const SEARCH_LINES_PER_FILE = 5;
@@ -39,10 +28,13 @@ export const make = (snapshot: Snapshot) =>
             onSome: (text) => ReviewSource.fromText(input, text),
           }),
         ),
-        Effect.tapError((error) => Effect.logWarning("Source read failed", {
-          path: input.path, revision: input.revision, message: error.message,
-        })),
-
+        Effect.tapError((error) =>
+          Effect.logWarning("Source read failed", {
+            path: input.path,
+            revision: input.revision,
+            message: error.message,
+          }),
+        ),
       ),
 
     findFiles: ({ query, revision }) =>
@@ -56,7 +48,7 @@ export const make = (snapshot: Snapshot) =>
         }),
       ),
 
-    searchCode: Effect.fnUntraced(function* ({ query, path, revision, cursor }) {
+    searchCode: Effect.fn("ReviewContext.searchCode")(function* ({ query, path, revision, cursor }) {
       const candidates = (yield* snapshot.paths(revision)).filter((p) => p.includes(path));
       const page = candidates.slice(cursor, cursor + SEARCH_FILES_PER_PAGE);
       const matches: Array<ReviewSearchMatch> = [];
@@ -64,14 +56,15 @@ export const make = (snapshot: Snapshot) =>
       let truncated = false;
 
       for (const file of page) {
-        const text = yield* snapshot.read(revision, file).pipe(Effect.option);
-        if (Option.isNone(text) || Option.isNone(text.value)) {
+        const row = yield* snapshot.read(revision, file).pipe(Effect.option);
+        const text = Option.isNone(row) ? Option.none<string>() : row.value;
+        if (Option.isNone(text)) {
           if (unreadablePaths.length < MAX_UNREADABLE_PATHS) unreadablePaths.push(file);
           continue;
         }
 
         let found = 0;
-        for (const [index, line] of text.value.value.split("\n").entries()) {
+        for (const [index, line] of text.value.split("\n").entries()) {
           if (!line.includes(query)) continue;
           if (found === SEARCH_LINES_PER_FILE) {
             truncated = true;
@@ -99,9 +92,3 @@ export const make = (snapshot: Snapshot) =>
   });
 
 export const layer = (snapshot: Snapshot) => Layer.succeed(ReviewRepository, make(snapshot));
-
-/** A snapshot over in-memory maps, for tests and local runs. */
-export const fromMaps = (files: Record<Revision, ReadonlyMap<string, string>>): Snapshot => ({
-  paths: (revision) => Effect.succeed([...files[revision].keys()].sort()),
-  read: (revision, path) => Effect.succeed(Option.fromNullishOr(files[revision].get(path))),
-});

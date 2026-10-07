@@ -1,5 +1,5 @@
 import type { Review } from "@yielded/agent-pr-review";
-import type { ReviewComment } from "./GitHub.ts";
+import type { ReviewComment } from "./domain.ts";
 
 type Finding = Review.ReviewFinding;
 

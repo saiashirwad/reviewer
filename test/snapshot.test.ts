@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Effect, Layer, Option } from "effect";
-import * as LocalSql from "../scripts/LocalSql.ts";
+import * as LocalSql from "./support/LocalSql.ts";
 import { GitHub, GitHubError } from "../src/GitHub.ts";
 import * as Snapshot from "../src/Snapshot.ts";
 

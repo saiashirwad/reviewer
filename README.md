@@ -19,9 +19,10 @@ it and completes. `pnpm review` fetches real GitHub data and uses your OpenCode 
 account, but replaces the posting method with console output. Its `Published`
 result means it reached that method, not that GitHub received anything.
 
-The default model is `muse-spark-1.3-contributor`. Muse uses the Responses API and
-only supports automatic tool choice. `src/Responses.ts` adapts Yielded's tool
-choices and accounts for reported usage. The default budget is $0.50 in estimated
+The default model is `muse-spark-1.3-contributor`. Muse uses the Responses API;
+chat models use OpenAI-compatible completions. Both paths go through
+`src/ReviewRuntime.ts` with budget wrappers in `src/museBudget.ts` and
+`src/Spending.ts`. The default budget is $0.50 in estimated
 OpenCode Go usage per review, not an additional subscription charge.
 
 ## Deploy to selected repositories

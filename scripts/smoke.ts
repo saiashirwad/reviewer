@@ -5,11 +5,12 @@
  */
 import { Review } from "@yielded/agent-pr-review";
 import { Config, Effect } from "effect";
+import { FetchHttpClient } from "effect/http";
 import assert from "node:assert/strict";
 import { NodeRuntime } from "@effect/platform-node";
-import * as Model from "../src/Model.ts";
-import * as Repository from "../src/Repository.ts";
-import * as Responses from "../src/Responses.ts";
+import * as OpenCode from "../src/OpenCode.ts";
+import * as ReviewRuntime from "../src/ReviewRuntime.ts";
+import { fromMaps } from "../src/Snapshot.ts";
 
 const base = `export const average = (values: ReadonlyArray<number>): number =>
   values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -30,7 +31,7 @@ const patch = `@@ -1,2 +1,2 @@
 +  values.reduce((sum, value) => sum + value, 0) / (values.length - 1);
 `;
 
-const snapshot = Repository.fromMaps({
+const snapshot = fromMaps({
   base: new Map([
     ["src/math.ts", base],
     ["src/latency.ts", caller],
@@ -42,29 +43,41 @@ const snapshot = Repository.fromMaps({
 });
 
 const program = Effect.gen(function* () {
-  const modelId = process.argv[2] ?? Model.DEFAULT_MODEL;
+  const modelId = process.argv[2] ?? OpenCode.DEFAULT_MODEL;
   const apiKey = yield* Config.Redacted("OPENCODE_API_KEY");
   yield* Effect.log(`Reviewing with opencode-go/${modelId}`);
   const request = Review.ReviewRequest.make({
-      title: "Simplify average",
-      description: "Drop the empty-array branch from average.",
-      baseRevision: "base0000",
-      headRevision: "head0000",
-      changes: [Review.ReviewChange.make({ path: "src/math.ts", patch })],
-      unreviewedPaths: [],
-    });
+    title: "Simplify average",
+    description: "Drop the empty-array branch from average.",
+    baseRevision: "base0000",
+    headRevision: "head0000",
+    changes: [Review.ReviewChange.make({ path: "src/math.ts", patch })],
+    unreviewedPaths: [],
+  });
   const sessionId = `smoke-${crypto.randomUUID()}`;
-  const outcome = yield* (modelId === Responses.MUSE_MODEL
-    ? Responses.review({ request, apiKey, sessionId, limitMicrousd: 500_000, guidance: undefined })
-    : Review.makeReviewer({ model: Model.model(modelId) }).review(request).pipe(
-        Effect.provide(Model.OpenCodeGoClient({ apiKey, sessionId })),
-      )).pipe(Effect.provide(Repository.layer(snapshot)));
+  const result = yield* ReviewRuntime.runReview({
+    request,
+    snapshot,
+    apiKey,
+    sessionId,
+    model: modelId,
+    limitMicrousd: 500_000,
+    guidance: undefined,
+  });
 
-  console.log(JSON.stringify(outcome, null, 2));
-  assert.equal(outcome.incomplete, undefined, "The smoke review must complete");
-  assert.ok(outcome.report.findings.some((finding) =>
-    finding.path === "src/math.ts" && finding.line === 2 && finding.category === "correctness"
-  ), "The reviewer must identify the planted arithmetic defect");
+  if (result._tag === "Skipped") {
+    return yield* Effect.fail(new Error(`Smoke review skipped: ${result.reason}`));
+  }
+
+  console.log(JSON.stringify(result.outcome, null, 2));
+  assert.equal(result.outcome.incomplete, undefined, "The smoke review must complete");
+  assert.ok(
+    result.outcome.report.findings.some(
+      (finding) =>
+        finding.path === "src/math.ts" && finding.line === 2 && finding.category === "correctness",
+    ),
+    "The reviewer must identify the planted arithmetic defect",
+  );
 });
 
-NodeRuntime.runMain(program);
+NodeRuntime.runMain(program.pipe(Effect.provide(FetchHttpClient.layer)));

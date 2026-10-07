@@ -1,14 +1,8 @@
 import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import type { PullRef, RepositoryRef, ReviewComment } from "./domain.ts";
 
-export interface RepositoryRef {
-  readonly owner: string;
-  readonly repository: string;
-}
-
-export interface PullRef extends RepositoryRef {
-  readonly number: number;
-}
+export type { PullRef, RepositoryRef, ReviewComment };
 
 export class GitHubError extends Data.TaggedError("GitHubError")<{
   readonly operation: string;
@@ -38,12 +32,6 @@ export type ChangedFile = typeof ChangedFile.Type;
 const Compare = Schema.Struct({ merge_base_commit: Schema.Struct({ sha: Schema.String }) });
 const Review = Schema.Struct({ body: Schema.NullOr(Schema.String) });
 
-export interface ReviewComment {
-  readonly path: string;
-  readonly line: number;
-  readonly body: string;
-}
-
 /** GitHub caps the pull request files listing at 3,000 entries. */
 const MAX_FILE_PAGES = 30;
 
@@ -57,7 +45,6 @@ export class GitHub extends Context.Service<
       head: string,
     ) => Effect.Effect<string, GitHubError>;
     readonly files: (ref: PullRef) => Effect.Effect<ReadonlyArray<ChangedFile>, GitHubError>;
-    /** The gzipped tarball of `sha`, as a byte stream. */
     readonly tarball: (
       repo: RepositoryRef,
       sha: string,
@@ -81,7 +68,7 @@ export class GitHub extends Context.Service<
 
 const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
-export const make = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+export const make = Effect.fn("GitHub.make")(function* (token: Redacted.Redacted<string>) {
   const client = (yield* HttpClient.HttpClient).pipe(
     HttpClient.mapRequest((request) =>
       request.pipe(

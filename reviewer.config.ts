@@ -5,11 +5,12 @@ import type { ReviewerConfig } from "./src/Settings.ts";
  * one deletes its webhook. A repo can override settings with `.github/reviewer.json`.
  *
  * Muse Spark 1.3 Contributor uses Responses. Other supported models use chat
- * completions and must have a price in src/Spending.ts.
+ * completions and must have a price in `src/Spending.ts`. Muse uses `src/museBudget.ts`.
  * See https://opencode.ai/docs/go/#endpoints
  */
 const config: ReviewerConfig = {
   model: "muse-spark-1.3-contributor",
+  /** An empty list skips webhook registration; the Worker health `fetch` still responds. */
   repos: [
     // { owner: "saiashirwad", repository: "some-repo" },
     // { owner: "saiashirwad", repository: "other-repo", model: "kimi-k2.7-code" },

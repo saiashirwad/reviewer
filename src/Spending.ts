@@ -1,23 +1,9 @@
 import { OpenAiClient } from "@effect/ai-openai-compat";
-import { Review } from "@yielded/agent-pr-review";
 import { Data, Effect, Option, Ref, Stream } from "effect";
 import { AiError } from "effect/ai";
+import { costControl, emptyTotals, settle, type Pricing, type Totals } from "./budgetCore.ts";
 
-/**
- * Without spending admission the reviewer applies a cumulative 416k-token quota
- * that counts every resent prompt, cached or not, at full weight. A 21-file PR
- * exhausted it after ~7 calls while costing under five cents. Supplying a cost
- * controller replaces that quota with a per-review dollar limit.
- *
- * Prices are OpenCode Go's published per-model rates, which count against the
- * subscription's usage limits. USD per million tokens is microdollars per token.
- * DeepSeek models use their peak rates. See https://opencode.ai/docs/go/#usage-limits
- */
-export interface Pricing {
-  readonly input: number;
-  readonly cached: number;
-  readonly output: number;
-}
+export type { Pricing };
 
 export const PRICING: Readonly<Record<string, Pricing>> = {
   "deepseek-v4.1-flash": { input: 0.3, cached: 0.006, output: 1.2 },
@@ -44,36 +30,17 @@ export class UnknownModel extends Data.TaggedError("UnknownModel")<{ readonly mo
   }
 }
 
-/** Requests without an explicit output cap are reserved at this many tokens. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 32_000;
 const MIN_OUTPUT_TOKENS = 256;
-/** Conservative: real tokenizers average closer to four characters per token. */
 const CHARS_PER_TOKEN = 3;
 
-interface Usage {
+interface ChatUsage {
   readonly prompt_tokens: number;
   readonly completion_tokens: number;
   readonly prompt_tokens_details?: unknown;
 }
 
-interface Totals {
-  readonly stopped: boolean;
-  readonly modelCalls: number;
-  readonly input: number;
-  readonly cached: number;
-  readonly output: number;
-  readonly spent: number;
-  readonly reserved: number;
-}
-
-const refusal = (description: string) =>
-  AiError.make({
-    module: "Spending",
-    method: "admit",
-    reason: AiError.InvalidRequestError.make({ description }),
-  });
-
-const cachedTokens = (usage: Usage) => {
+const cachedTokens = (usage: ChatUsage) => {
   const details = usage.prompt_tokens_details;
   const cached =
     typeof details === "object" && details !== null && "cached_tokens" in details
@@ -82,8 +49,14 @@ const cachedTokens = (usage: Usage) => {
   return Number.isFinite(cached) ? Math.min(cached, usage.prompt_tokens) : 0;
 };
 
-/** Wrap the provided client so every call is admitted against one review's budget. */
-export const make = Effect.fnUntraced(function* (options: {
+const refusal = (description: string) =>
+  AiError.make({
+    module: "Spending",
+    method: "admit",
+    reason: AiError.InvalidRequestError.make({ description }),
+  });
+
+export const make = Effect.fn("Spending.make")(function* (options: {
   readonly model: string;
   readonly limitMicrousd: number;
 }) {
@@ -91,18 +64,8 @@ export const make = Effect.fnUntraced(function* (options: {
   if (pricing === undefined) return yield* new UnknownModel({ model: options.model });
 
   const native = yield* OpenAiClient.OpenAiClient;
-  const totals = yield* Ref.make<Totals>({
-    stopped: false,
-    modelCalls: 0,
-    input: 0,
-    cached: 0,
-    output: 0,
-    spent: 0,
-    reserved: 0,
-  });
+  const totals = yield* Ref.make<Totals>(emptyTotals());
 
-  // The streaming request type is an Omit over an index signature, so only rely on
-  // structural access to the fields that are priced.
   const admit = <P extends { readonly [key: string]: unknown }>(payload: P) =>
     Ref.modify(totals, (current): [Option.Option<{ payload: P; reservation: number }>, Totals] => {
       if (current.stopped) return [Option.none(), current];
@@ -129,32 +92,13 @@ export const make = Effect.fnUntraced(function* (options: {
           onNone: () =>
             Effect.logInfo("Review spending limit reached", {
               limitMicrousd: options.limitMicrousd,
-            }).pipe(Effect.andThen(Effect.fail(refusal("The review's spending limit is reached.")))),
+            }).pipe(
+              Effect.andThen(Effect.fail(refusal("The review's spending limit is reached."))),
+            ),
           onSome: Effect.succeed,
         }),
       ),
     );
-
-  /** Replace a reservation with the charge for the usage the provider reported. */
-  const settle = (reservation: number, usage: Usage | undefined) =>
-    Ref.update(totals, (current) => {
-      if (usage === undefined) {
-        return { ...current, reserved: current.reserved - reservation, spent: current.spent + reservation };
-      }
-      const cached = cachedTokens(usage);
-      const cost =
-        (usage.prompt_tokens - cached) * pricing.input +
-        cached * pricing.cached +
-        usage.completion_tokens * pricing.output;
-      return {
-        ...current,
-        reserved: current.reserved - reservation,
-        spent: current.spent + cost,
-        input: current.input + usage.prompt_tokens,
-        cached: current.cached + cached,
-        output: current.output + usage.completion_tokens,
-      };
-    });
 
   const client = OpenAiClient.OpenAiClient.of({
     ...native,
@@ -162,52 +106,59 @@ export const make = Effect.fnUntraced(function* (options: {
       const { payload, reservation } = yield* admit(original);
       const result = yield* native
         .createResponse(payload)
-        .pipe(Effect.tapError(() => settle(reservation, undefined)));
-      yield* settle(reservation, result[0].usage ?? undefined);
+        .pipe(Effect.tapError(() => settle(totals, pricing, reservation, undefined)));
+      const usage = result[0].usage as ChatUsage | undefined;
+      yield* settle(
+        totals,
+        pricing,
+        reservation,
+        usage
+          ? {
+              input: usage.prompt_tokens,
+              cached: cachedTokens(usage),
+              output: usage.completion_tokens,
+            }
+          : undefined,
+      );
       return result;
     }),
     createResponseStream: Effect.fnUntraced(function* (original) {
       const { payload, reservation } = yield* admit(original);
       const [response, stream] = yield* native
         .createResponseStream(payload)
-        .pipe(Effect.tapError(() => settle(reservation, undefined)));
+        .pipe(Effect.tapError(() => settle(totals, pricing, reservation, undefined)));
 
-      let usage: Usage | undefined;
+      let usage: ChatUsage | undefined;
       return [
         response,
         stream.pipe(
           Stream.tap((event) =>
             Effect.sync(() => {
-              if (typeof event === "object" && "usage" in event && event.usage) {
-                usage = event.usage as Usage;
+              if (typeof event === "object" && event !== null && "usage" in event && event.usage) {
+                usage = event.usage as ChatUsage;
               }
             }),
           ),
-          Stream.ensuring(Effect.suspend(() => settle(reservation, usage))),
+          Stream.ensuring(
+            Effect.suspend(() =>
+              settle(
+                totals,
+                pricing,
+                reservation,
+                usage
+                  ? {
+                      input: usage.prompt_tokens,
+                      cached: cachedTokens(usage),
+                      output: usage.completion_tokens,
+                    }
+                  : undefined,
+              ),
+            ),
+          ),
         ),
       ] as const;
     }),
   });
 
-  const costControl: Review.ReviewCostControl = {
-    snapshot: Ref.get(totals).pipe(
-      Effect.map((current) =>
-        Review.ReviewCostSnapshot.make({
-          stopped: current.stopped,
-          modelCalls: current.modelCalls,
-          usage: Review.ReviewUsage.make({
-            inputTokens: current.input,
-            uncachedInputTokens: current.input - current.cached,
-            cachedInputTokens: current.cached,
-            cacheWriteInputTokens: 0,
-            outputTokens: current.output,
-            estimatedCostMicrousd: Math.ceil(current.spent),
-            reservedCostMicrousd: Math.ceil(current.reserved),
-          }),
-        }),
-      ),
-    ),
-  };
-
-  return { client, costControl };
+  return { client, costControl: costControl(totals) };
 });

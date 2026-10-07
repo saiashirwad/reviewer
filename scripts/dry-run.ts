@@ -6,6 +6,7 @@
  */
 import { NodeRuntime } from "@effect/platform-node";
 import { Config, Effect, Layer } from "effect";
+import { FetchHttpClient } from "effect/http";
 import config from "../reviewer.config.ts";
 import * as GitHub from "../src/GitHub.ts";
 import * as Pipeline from "../src/Pipeline.ts";
@@ -55,4 +56,4 @@ const program = Effect.gen(function* () {
   console.log("\nResult:", result);
 });
 
-NodeRuntime.runMain(program);
+NodeRuntime.runMain(program.pipe(Effect.provide(FetchHttpClient.layer)));

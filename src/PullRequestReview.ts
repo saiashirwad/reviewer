@@ -1,7 +1,9 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect } from "effect";
+import { GITHUB_TOKEN, OPENCODE_API_KEY } from "./config/bindings.ts";
 import * as GitHub from "./GitHub.ts";
+import type { Job } from "./domain.ts";
 import * as Pipeline from "./Pipeline.ts";
 import * as Snapshot from "./Snapshot.ts";
 
@@ -22,8 +24,9 @@ export class PullRequestReview extends Cloudflare.DurableObject<PullRequestRevie
   Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     // A missing secret is a deployment error, not something a review can recover from.
-    const githubToken = yield* Config.Redacted("GITHUB_TOKEN").pipe(Effect.orDie);
-    const opencodeApiKey = yield* Config.Redacted("OPENCODE_API_KEY").pipe(Effect.orDie);
+    // Same keys as Worker init — both orDie so Alchemy binds secrets on the script and DO.
+    const githubToken = yield* Config.Redacted(GITHUB_TOKEN).pipe(Effect.orDie);
+    const opencodeApiKey = yield* Config.Redacted(OPENCODE_API_KEY).pipe(Effect.orDie);
 
     return Effect.gen(function* () {
       const sql = state.storage.sql.raw;
@@ -31,7 +34,7 @@ export class PullRequestReview extends Cloudflare.DurableObject<PullRequestRevie
 
       const review = yield* Alchemy.makeCallback(
         "review",
-        Effect.fnUntraced(function* (job: Pipeline.Job) {
+        Effect.fnUntraced(function* (job: Job) {
           const attemptKey = `attempts:${job.headSha ?? "current"}`;
           const attempts = ((yield* state.storage.get<number>(attemptKey)) ?? 0) + 1;
           yield* state.storage.put(attemptKey, attempts);

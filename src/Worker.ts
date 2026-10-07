@@ -2,6 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHubEvents from "alchemy/GitHub";
 import { Config, Effect, type Redacted } from "effect";
+import { GITHUB_TOKEN, OPENCODE_API_KEY } from "./config/bindings.ts";
 import { HttpServerResponse } from "effect/http";
 import config from "../reviewer.config.ts";
 import type { PullRef } from "./GitHub.ts";
@@ -17,8 +18,8 @@ export default Cloudflare.Worker(
   Effect.gen(function* () {
     // Read during init so Alchemy binds both secrets onto the Worker; the
     // Durable Object reads the same bindings at runtime.
-    yield* Config.Redacted("GITHUB_TOKEN").pipe(Effect.orDie);
-    yield* Config.Redacted("OPENCODE_API_KEY").pipe(Effect.orDie);
+    yield* Config.Redacted(GITHUB_TOKEN).pipe(Effect.orDie);
+    yield* Config.Redacted(OPENCODE_API_KEY).pipe(Effect.orDie);
 
     const reviews = yield* PullRequestReview;
     // Generated once and kept in Alchemy state. The event source resolves Outputs

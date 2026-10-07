@@ -1,38 +1,18 @@
 import type * as cf from "@cloudflare/workers-types";
 import { Review } from "@yielded/agent-pr-review";
-import { OpenAiClient } from "@effect/ai-openai-compat";
-import { Effect, Layer, Option, type Redacted, Result as Outcome, Schema } from "effect";
-import { type ChangedFile, GitHub, type PullRef } from "./GitHub.ts";
-import * as Model from "./Model.ts";
+import { Effect, Option, type Redacted, Schema } from "effect";
+import { type ChangedFile, GitHub } from "./GitHub.ts";
+import { skipped, type Job, type Result } from "./domain.ts";
 import * as Publish from "./Publish.ts";
-import * as Repository from "./Repository.ts";
+import * as ReviewRuntime from "./ReviewRuntime.ts";
 import * as Settings from "./Settings.ts";
 import * as Snapshot from "./Snapshot.ts";
-import * as Spending from "./Spending.ts";
-import * as Responses from "./Responses.ts";
+import type { Snapshot as SnapshotType } from "./snapshot/types.ts";
 
-export interface Job extends PullRef {
-  /** The head the webhook saw. Omitted for manual `/review` requests, which take the current head. */
-  readonly headSha?: string;
-  readonly settings: Settings.Settings;
-}
-
-export type Result =
-  | { readonly _tag: "Published"; readonly headSha: string; readonly findings: number }
-  | { readonly _tag: "Skipped"; readonly reason: string };
-
-const skipped = (reason: string): Result => ({ _tag: "Skipped", reason });
+export type { Job, Result } from "./domain.ts";
 
 const MAX_UNREVIEWED_PATHS = 300;
 
-/**
- * The reviewer defaults to a 48k-token working context. Each rollover discards
- * unread tool results and forces rereads, and OpenCode Go's models have far
- * larger windows with cheap cached input, so use the reviewer's maximum.
- */
-const CONTEXT_TOKEN_LIMIT = 128_000;
-
-/** Split changed files into reviewable patches and disclosed exclusions within the reviewer's bounds. */
 const admit = (files: ReadonlyArray<ChangedFile>, exclude: (path: string) => boolean) => {
   const changes: Array<Review.ReviewChange> = [];
   const unreviewed: Array<string> = [];
@@ -58,7 +38,7 @@ const admit = (files: ReadonlyArray<ChangedFile>, exclude: (path: string) => boo
   return { changes, unreviewed: unreviewed.slice(0, MAX_UNREVIEWED_PATHS) };
 };
 
-const readRepoFile = Effect.fnUntraced(function* (snapshot: Repository.Snapshot) {
+const readRepoFile = Effect.fn("Pipeline.readRepoFile")(function* (snapshot: SnapshotType) {
   const text = yield* snapshot.read("base", Settings.REPO_FILE_PATH).pipe(Effect.option);
   if (Option.isNone(text) || Option.isNone(text.value)) return Option.none<Settings.RepoFile>();
   return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Settings.RepoFile))(
@@ -73,7 +53,7 @@ const readRepoFile = Effect.fnUntraced(function* (snapshot: Repository.Snapshot)
   );
 });
 
-export const run = Effect.fnUntraced(function* (options: {
+export const run = Effect.fn("Pipeline.run")(function* (options: {
   readonly job: Job;
   readonly sql: cf.SqlStorage;
   readonly opencodeApiKey: Redacted.Redacted<string>;
@@ -129,51 +109,23 @@ export const run = Effect.fnUntraced(function* (options: {
     unreviewed: unreviewed.length,
   });
 
-  const chatReview = Effect.gen(function* () {
-  const spending = yield* Spending.make({
+  const sessionId = `${job.owner}/${job.repository}#${job.number}@${headSha}`;
+  const limitMicrousd = Math.round(settings.maxCostUsd * 1_000_000);
+
+  const review = yield* ReviewRuntime.runReview({
+    request,
+    snapshot,
+    apiKey: options.opencodeApiKey,
+    sessionId,
     model: settings.model,
-    limitMicrousd: Math.round(settings.maxCostUsd * 1_000_000),
-  }).pipe(
-    Effect.provide(
-      Model.OpenCodeGoClient({
-        apiKey: options.opencodeApiKey,
-        sessionId: `${job.owner}/${job.repository}#${job.number}@${headSha}`,
-      }),
-    ),
-    Effect.result,
-  );
-  if (Outcome.isFailure(spending)) return skipped(spending.failure.message);
-
-  const { review } = Review.makeReviewer({
-    model: Model.model(settings.model),
+    limitMicrousd,
     guidance: settings.guidance,
-    contextTokenLimit: CONTEXT_TOKEN_LIMIT,
-    costControl: spending.success.costControl,
-  });
-  const outcome = yield* review(request).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        Repository.layer(snapshot),
-        Layer.succeed(OpenAiClient.OpenAiClient, spending.success.client),
-      ),
-    ),
-  );
-
-  return outcome;
   });
 
-  const outcome = yield* (settings.model === Responses.MUSE_MODEL
-    ? Responses.review({
-        request,
-        apiKey: options.opencodeApiKey,
-        sessionId: `${job.owner}/${job.repository}#${job.number}@${headSha}`,
-        limitMicrousd: Math.round(settings.maxCostUsd * 1_000_000),
-        guidance: settings.guidance,
-      }).pipe(Effect.provide(Repository.layer(snapshot)))
-    : chatReview);
-  if (!("report" in outcome)) return outcome;
+  if (review._tag !== "Completed") return review;
 
-  // The model may have taken minutes; don't publish against a head that has moved on.
+  const { outcome } = review;
+
   const latest = yield* github.pull(job);
   if (latest.head.sha !== headSha) return skipped(`head moved to ${latest.head.sha} during review`);
 
