@@ -1,18 +1,9 @@
+import { Schema } from "effect";
+import manifest from "./reviewer.json" with { type: "json" };
+import { Manifest, strictManifestOptions } from "./src/Management.ts";
 import type { ReviewerConfig } from "./src/Settings.ts";
 
-/**
- * Repositories listed here get a webhook on the next `pnpm run deploy`; removing
- * one deletes its webhook. A repo can override settings with `.github/reviewer.json`.
- *
- * Muse Spark 1.3 Contributor uses Responses. Other supported models use chat
- * completions and must have a price in `src/Spending.ts`. Muse uses `src/museBudget.ts`.
- * See https://opencode.ai/docs/go/#endpoints
- */
-const config: ReviewerConfig = {
-  model: "muse-spark-1.3-contributor",
-  repos: [
-    { owner: "saiashirwad", repository: "parserator" },
-  ],
-};
+const decoded = Schema.decodeUnknownSync(Manifest, strictManifestOptions)(manifest);
+const { deployment: _deployment, ...config } = decoded;
 
-export default config;
+export default config satisfies ReviewerConfig;

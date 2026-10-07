@@ -1,0 +1,14 @@
+{
+  "model": "muse-spark-1.3-contributor",
+  "repos": [
+    {
+      "owner": "saiashirwad",
+      "repository": "parserator"
+    }
+  ],
+  "deployment": {
+    "profile": "admin",
+    "stage": "prod",
+    "url": "https://reviewer-reviewer-prod-jrphhhng7aafhnju.texoport.workers.dev"
+  }
+}

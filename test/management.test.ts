@@ -1,0 +1,95 @@
+import { expect, it } from "@effect/vitest";
+import { Effect, Schema } from "effect";
+import * as Management from "../src/Management.ts";
+
+const decodeManifest = (input: unknown) =>
+  Schema.decodeUnknownEffect(Management.Manifest)(input, Management.strictManifestOptions);
+
+const sampleManifest = {
+  model: "muse-spark-1.3-contributor",
+  repos: [{ owner: "acme", repository: "widget" }],
+  deployment: {
+    profile: "admin",
+    stage: "prod",
+    url: "https://reviewer-reviewer-prod-jrphhhng7aafhnju.texoport.workers.dev",
+  },
+};
+
+it.effect("parseRepo accepts shorthand and GitHub URLs", () =>
+  Effect.gen(function*() {
+    const shorthand = yield* Management.parseRepo("Acme/Widget");
+    expect(shorthand).toEqual({ owner: "Acme", repository: "Widget" });
+
+    const url = yield* Management.parseRepo("https://github.com/acme/widget");
+    expect(url).toEqual({ owner: "acme", repository: "widget" });
+  }));
+
+it.effect("parseRepo rejects invalid targets", () =>
+  Effect.gen(function*() {
+    const badRepo = yield* Effect.flip(Management.parseRepo("acme/../evil"));
+    expect(badRepo._tag).toBe("InvalidTarget");
+
+    const foreign = yield* Effect.flip(Management.parseRepo("https://gitlab.com/acme/widget"));
+    expect(foreign._tag).toBe("InvalidTarget");
+  }));
+
+it.effect("parsePull accepts shorthand, URLs, and discussion fragments", () =>
+  Effect.gen(function*() {
+    const shorthand = yield* Management.parsePull("acme/widget#42");
+    expect(shorthand).toEqual({ owner: "acme", repository: "widget", number: 42 });
+
+    const url = yield* Management.parsePull(
+      "https://github.com/acme/widget/pull/99#discussion_r123456789",
+    );
+    expect(url).toEqual({ owner: "acme", repository: "widget", number: 99 });
+  }));
+
+it.effect("parsePull rejects repo-only and traversal paths", () =>
+  Effect.gen(function*() {
+    const repoOnly = yield* Effect.flip(Management.parsePull("acme/widget"));
+    expect(repoOnly._tag).toBe("InvalidTarget");
+
+    const traversal = yield* Effect.flip(
+      Management.parsePull("https://github.com/acme/widget/pull/1/../secrets"),
+    );
+    expect(traversal._tag).toBe("InvalidTarget");
+  }));
+
+it.effect("manifest rejects unknown fields and duplicate repos", () =>
+  Effect.gen(function*() {
+    const unknownField = yield* Effect.flip(decodeManifest({ ...sampleManifest, typo: true }));
+    expect(unknownField._tag).toBe("SchemaError");
+
+    const duplicates = yield* Effect.flip(decodeManifest({
+      ...sampleManifest,
+      repos: [
+        { owner: "Acme", repository: "widget" },
+        { owner: "acme", repository: "Widget" },
+      ],
+    }));
+    expect(duplicates._tag).toBe("SchemaError");
+  }));
+
+it.effect("addRepo and removeRepo preserve overrides and casing", () =>
+  Effect.gen(function*() {
+    const manifest = yield* decodeManifest({
+      ...sampleManifest,
+      repos: [{
+        owner: "Acme",
+        repository: "Widget",
+        guidance: "Keep it tight.",
+        exclude: ["dist/**"],
+      }],
+    });
+
+    const added = Management.addRepo(manifest, { owner: "acme", repository: "widget" });
+    expect(added).toBe(manifest);
+    expect(added.repos[0]?.guidance).toBe("Keep it tight.");
+
+    const withNew = Management.addRepo(manifest, { owner: "beta", repository: "demo" });
+    expect(withNew.repos).toHaveLength(2);
+
+    const removed = Management.removeRepo(withNew, { owner: "ACME", repository: "widget" });
+    expect(removed.repos).toEqual([{ owner: "beta", repository: "demo" }]);
+    expect(Management.removeRepo(removed, { owner: "beta", repository: "demo" }).repos).toEqual([]);
+  }));
