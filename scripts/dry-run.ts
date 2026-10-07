@@ -1,26 +1,21 @@
-/**
- * Runs the full pipeline against a real pull request without posting anything:
- * the tarball, merge base, patches, and model calls are real; the review is printed.
- *
- *   GITHUB_TOKEN=$(gh auth token) node scripts/dry-run.ts owner/repo#123 [model]
- */
 import { NodeRuntime } from "@effect/platform-node";
-import { Config, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import config from "../reviewer.config.ts";
 import * as GitHub from "../src/GitHub.ts";
+import * as Management from "../src/Management.ts";
 import * as Pipeline from "../src/Pipeline.ts";
 import * as Settings from "../src/Settings.ts";
 import * as Snapshot from "../src/Snapshot.ts";
 import * as LocalSql from "./LocalSql.ts";
+import * as Runtime from "./management/Runtime.ts";
 
-const [target, modelOverride] = process.argv.slice(2);
-const match = target?.match(/^([^/]+)\/([^#]+)#(\d+)$/);
-if (!match) {
-  console.error("usage: node scripts/dry-run.ts owner/repo#123 [model]");
-  process.exit(1);
+const [target, modelOverride, ...extra] = process.argv.slice(2);
+const usage = "usage: pnpm review <owner/repo#123 | GitHub PR URL> [model] (never posts)";
+if (target === "--help" || target === "-h") {
+  console.log(usage);
+  process.exit(0);
 }
-const [, owner, repository, number] = match as unknown as [string, string, string, string];
 
 const printReviews = Layer.effect(
   GitHub.GitHub,
@@ -42,14 +37,19 @@ const printReviews = Layer.effect(
 );
 
 const program = Effect.gen(function*() {
-  const token = yield* Config.Redacted("GITHUB_TOKEN");
-  const opencodeApiKey = yield* Config.Redacted("OPENCODE_API_KEY");
+  if (target === undefined || extra.length > 0) {
+    return yield* new Runtime.CliError({ message: usage });
+  }
+  const ref = yield* Management.parsePull(target);
+  const configured = config.repos.find((entry) => Management.repoIdentityEquals(entry, ref));
+  const entry = { ...(configured ?? ref), ...(modelOverride ? { model: modelOverride } : {}) };
+  const token = yield* Runtime.githubToken;
+  const opencodeApiKey = yield* Runtime.opencodeKey;
   const sql = LocalSql.make();
   Snapshot.migrate(sql);
 
-  const entry = { owner, repository, ...(modelOverride ? { model: modelOverride } : {}) };
   const result = yield* Pipeline.run({
-    job: { owner, repository, number: Number(number), settings: Settings.resolve(config, entry) },
+    job: { ...ref, settings: Settings.resolve(config, entry) },
     sql,
     opencodeApiKey,
   }).pipe(Effect.provide(printReviews.pipe(Layer.provide(GitHub.layer(token)))));
@@ -57,4 +57,9 @@ const program = Effect.gen(function*() {
   console.log("\nResult:", result);
 });
 
-NodeRuntime.runMain(program.pipe(Effect.provide(FetchHttpClient.layer)));
+NodeRuntime.runMain(
+  Effect.gen(function*() {
+    yield* Runtime.loadEnvironment();
+    yield* program.pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv())));
+  }).pipe(Effect.provide(Layer.mergeAll(Runtime.layer, FetchHttpClient.layer))),
+);

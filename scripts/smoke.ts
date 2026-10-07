@@ -5,12 +5,13 @@
  */
 import { NodeRuntime } from "@effect/platform-node";
 import { Review } from "@yielded/agent-pr-review";
-import { Config, Effect } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import assert from "node:assert/strict";
 import * as OpenCode from "../src/OpenCode.ts";
 import * as ReviewRuntime from "../src/ReviewRuntime.ts";
 import { fromMaps } from "../src/Snapshot.ts";
+import * as Runtime from "./management/Runtime.ts";
 
 const base = `export const average = (values: ReadonlyArray<number>): number =>
   values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -44,7 +45,7 @@ const snapshot = fromMaps({
 
 const program = Effect.gen(function*() {
   const modelId = process.argv[2] ?? OpenCode.DEFAULT_MODEL;
-  const apiKey = yield* Config.Redacted("OPENCODE_API_KEY");
+  const apiKey = yield* Runtime.opencodeKey;
   yield* Effect.log(`Reviewing with opencode-go/${modelId}`);
   const request = Review.ReviewRequest.make({
     title: "Simplify average",
@@ -80,4 +81,9 @@ const program = Effect.gen(function*() {
   );
 });
 
-NodeRuntime.runMain(program.pipe(Effect.provide(FetchHttpClient.layer)));
+NodeRuntime.runMain(
+  Effect.gen(function*() {
+    yield* Runtime.loadEnvironment();
+    yield* program.pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv())));
+  }).pipe(Effect.provide(FetchHttpClient.layer)),
+);
