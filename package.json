@@ -13,7 +13,8 @@
     "fmt:check": "dprint check",
     "smoke": "node scripts/smoke.ts",
     "review": "node scripts/dry-run.ts",
-    "deploy": "alchemy deploy",
+    "reviewer": "node scripts/reviewer.ts",
+    "deploy": "node scripts/reviewer.ts deploy",
     "dev": "alchemy dev",
     "destroy": "alchemy destroy"
   },

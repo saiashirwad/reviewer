@@ -18,6 +18,7 @@
       "name": "@effect/language-service",
       "diagnostics": false,
       "allowedUnstableApis": [
+        "effect/cli",
         "effect/http",
         "effect/ai",
         "@effect/ai-openai",
