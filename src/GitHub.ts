@@ -1,14 +1,20 @@
-import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/http";
 import type { PullRef, RepositoryRef, ReviewComment } from "./domain.ts";
 
 export type { PullRef, RepositoryRef, ReviewComment };
 
-export class GitHubError extends Data.TaggedError("GitHubError")<{
-  readonly operation: string;
-  readonly status?: number;
-  readonly message: string;
-}> {}
+export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError", {
+  operation: Schema.String,
+  status: Schema.optionalKey(Schema.Number),
+  message: Schema.String,
+}) {}
 
 export const PullRequest = Schema.Struct({
   number: Schema.Number,
@@ -68,6 +74,36 @@ export class GitHub extends Context.Service<
 
 const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
+const collectPages = Effect.fnUntraced(
+  function*<A, E, R>(
+    fetchPage: (page: number) => Effect.Effect<ReadonlyArray<A>, E, R>,
+    maxPages = Number.POSITIVE_INFINITY,
+  ) {
+    const collected: Array<A> = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const batch = yield* fetchPage(page);
+      collected.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return collected;
+  },
+);
+
+const toGitHubError = (operation: string) => (cause: unknown): GitHubError => {
+  if (HttpClientError.isHttpClientError(cause)) {
+    const status = cause.response?.status;
+    return new GitHubError({
+      operation,
+      message: cause.message,
+      ...(status === undefined ? {} : { status }),
+    });
+  }
+  return new GitHubError({
+    operation,
+    message: cause instanceof Error ? cause.message : String(cause),
+  });
+};
+
 export const make = Effect.fn("GitHub.make")(function*(token: Redacted.Redacted<string>) {
   const client = (yield* HttpClient.HttpClient).pipe(
     HttpClient.mapRequest((request) =>
@@ -83,102 +119,83 @@ export const make = Effect.fn("GitHub.make")(function*(token: Redacted.Redacted<
     ),
   );
 
-  const fail = (operation: string) => (cause: unknown) => {
-    const status = typeof cause === "object" && cause !== null && "response" in cause
-      ? (cause as { response?: { status?: number; }; }).response?.status
-      : undefined;
-    return new GitHubError({
-      operation,
-      message: cause instanceof Error ? cause.message : String(cause),
-      ...(status === undefined ? {} : { status }),
-    });
-  };
+  const okClient = HttpClient.filterStatusOk(client);
 
   const getJson = <S extends Schema.Top>(operation: string, url: string, schema: S) =>
-    HttpClient.filterStatusOk(client)
-      .get(url)
-      .pipe(
-        Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)),
-        Effect.mapError(fail(operation)),
-      );
+    okClient.get(url).pipe(
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)),
+      Effect.mapError(toGitHubError(operation)),
+    );
 
   return GitHub.of({
-    pull: ({ owner, repository, number }) =>
-      getJson("pull", `/repos/${owner}/${repository}/pulls/${number}`, PullRequest),
+    pull: Effect.fn("GitHub.pull")(function*({ owner, repository, number }) {
+      return yield* getJson("pull", `/repos/${owner}/${repository}/pulls/${number}`, PullRequest);
+    }),
 
-    mergeBase: ({ owner, repository }, base, head) =>
-      getJson(
+    mergeBase: Effect.fn("GitHub.mergeBase")(function*({ owner, repository }, base, head) {
+      const compare = yield* getJson(
         "mergeBase",
         `/repos/${owner}/${repository}/compare/${base}...${head}?per_page=1`,
         Compare,
-      ).pipe(Effect.map((compare) => compare.merge_base_commit.sha)),
-
-    files: Effect.fnUntraced(function*({ owner, repository, number }) {
-      const files: Array<ChangedFile> = [];
-      for (let page = 1; page <= MAX_FILE_PAGES; page++) {
-        const batch = yield* getJson(
-          "files",
-          `/repos/${owner}/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
-          Schema.Array(ChangedFile),
-        );
-        files.push(...batch);
-        if (batch.length < 100) break;
-      }
-      return files;
+      );
+      return compare.merge_base_commit.sha;
     }),
 
-    tarball: ({ owner, repository }, sha) =>
-      HttpClient.filterStatusOk(client)
-        .get(`/repos/${owner}/${repository}/tarball/${sha}`)
-        .pipe(
-          Effect.flatMap((response) => response.arrayBuffer),
-          Effect.map((bytes) => new Blob([bytes]).stream()),
-          Effect.mapError(fail("tarball")),
-        ),
-
-    content: ({ owner, repository }, path, sha) =>
-      client
-        .get(`/repos/${owner}/${repository}/contents/${encodePath(path)}?ref=${sha}`, {
-          headers: { accept: "application/vnd.github.raw" },
-        })
-        .pipe(
-          Effect.flatMap((response) =>
-            response.status === 404
-              ? Effect.succeedNone
-              : HttpClientResponse.filterStatusOk(response).pipe(
-                Effect.flatMap((ok) => ok.text),
-                Effect.map(Option.some),
-              )
+    files: Effect.fn("GitHub.files")(function*({ owner, repository, number }) {
+      return yield* collectPages(
+        (page) =>
+          getJson(
+            "files",
+            `/repos/${owner}/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
+            Schema.Array(ChangedFile),
           ),
-          Effect.mapError(fail("content")),
-        ),
+        MAX_FILE_PAGES,
+      );
+    }),
 
-    reviewBodies: Effect.fnUntraced(function*({ owner, repository, number }) {
-      const bodies: Array<string> = [];
-      for (let page = 1;; page++) {
-        const reviews = yield* getJson(
+    tarball: Effect.fn("GitHub.tarball")(function*({ owner, repository }, sha) {
+      const response = yield* okClient.get(`/repos/${owner}/${repository}/tarball/${sha}`);
+      const bytes = yield* response.arrayBuffer;
+      return new Blob([bytes]).stream();
+    }, Effect.mapError(toGitHubError("tarball"))),
+
+    content: Effect.fn("GitHub.content")(function*({ owner, repository }, path, sha) {
+      const response = yield* client.get(
+        `/repos/${owner}/${repository}/contents/${encodePath(path)}?ref=${sha}`,
+        { headers: { accept: "application/vnd.github.raw" } },
+      );
+      if (response.status === 404) {
+        return Option.none();
+      }
+      const ok = yield* HttpClientResponse.filterStatusOk(response);
+      const text = yield* ok.text;
+      return Option.some(text);
+    }, Effect.mapError(toGitHubError("content"))),
+
+    reviewBodies: Effect.fn("GitHub.reviewBodies")(function*({ owner, repository, number }) {
+      const reviews = yield* collectPages((page) =>
+        getJson(
           "reviews",
           `/repos/${owner}/${repository}/pulls/${number}/reviews?per_page=100&page=${page}`,
           Schema.Array(Review),
-        );
-        bodies.push(...reviews.flatMap(({ body }) => (body ? [body] : [])));
-        if (reviews.length < 100) break;
-      }
-      return bodies;
+        )
+      );
+      return reviews.flatMap(({ body }) => (body ? [body] : []));
     }),
 
-    createReview: ({ owner, repository, number }, input) =>
-      HttpClientRequest.post(`/repos/${owner}/${repository}/pulls/${number}/reviews`).pipe(
+    createReview: Effect.fn("GitHub.createReview")(function*({ owner, repository, number }, input) {
+      yield* HttpClientRequest.post(`/repos/${owner}/${repository}/pulls/${number}/reviews`).pipe(
         HttpClientRequest.bodyJsonUnsafe({
           commit_id: input.commitId,
           event: "COMMENT",
           body: input.body,
           comments: input.comments.map((comment) => ({ ...comment, side: "RIGHT" })),
         }),
-        HttpClient.filterStatusOk(client).execute,
+        okClient.execute,
         Effect.asVoid,
-        Effect.mapError(fail("createReview")),
-      ),
+        Effect.mapError(toGitHubError("createReview")),
+      );
+    }),
   });
 });
 

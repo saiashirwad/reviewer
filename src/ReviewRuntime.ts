@@ -1,7 +1,8 @@
 import { OpenAiClient as OpenAiClientResponses, OpenAiLanguageModel } from "@effect/ai-openai";
 import { OpenAiClient as OpenAiClientChat } from "@effect/ai-openai-compat";
 import { Review } from "@yielded/agent-pr-review";
-import { Effect, Layer, type Redacted, Result } from "effect";
+import { ReviewRepository } from "@yielded/agent-pr-review/review-repository";
+import { Effect, type Redacted } from "effect";
 import { AiError } from "effect/ai";
 import * as museBudget from "./museBudget.ts";
 import * as OpenCode from "./OpenCode.ts";
@@ -15,6 +16,16 @@ export type ReviewRun =
   | { readonly _tag: "Completed"; readonly outcome: Review.ReviewOutcome; }
   | { readonly _tag: "Skipped"; readonly reason: string; };
 
+interface Options {
+  readonly request: Review.ReviewRequest;
+  readonly snapshot: Snapshot;
+  readonly apiKey: Redacted.Redacted<string>;
+  readonly sessionId: string;
+  readonly model: string;
+  readonly limitMicrousd: number;
+  readonly guidance: string | undefined;
+}
+
 const skip = (reason: string): ReviewRun => ({ _tag: "Skipped", reason });
 
 const skipFromReviewError = (error: unknown): ReviewRun => {
@@ -25,27 +36,15 @@ const skipFromReviewError = (error: unknown): ReviewRun => {
   return skip(error instanceof Error ? error.message : String(error));
 };
 
-const runChatReview = Effect.fnUntraced(function*(options: {
-  readonly request: Review.ReviewRequest;
-  readonly snapshot: Snapshot;
-  readonly apiKey: Redacted.Redacted<string>;
-  readonly sessionId: string;
-  readonly model: string;
-  readonly limitMicrousd: number;
-  readonly guidance: string | undefined;
-}) {
-  const spendingResult = yield* Spending.make({
+const runChatReview = Effect.fnUntraced(function*(options: Options) {
+  const spending = yield* Spending.make({
     model: options.model,
     limitMicrousd: options.limitMicrousd,
   }).pipe(
     Effect.provide(
       OpenCode.chatClientLayer({ apiKey: options.apiKey, sessionId: options.sessionId }),
     ),
-    Effect.result,
   );
-
-  if (Result.isFailure(spendingResult)) return skipFromReviewError(spendingResult.failure);
-  const spending = spendingResult.success;
 
   const { review } = Review.makeReviewer({
     model: OpenCode.model(options.model),
@@ -54,37 +53,18 @@ const runChatReview = Effect.fnUntraced(function*(options: {
     costControl: spending.costControl,
   });
 
-  const outcomeResult = yield* review(options.request).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        ReviewContext.layer(options.snapshot),
-        Layer.succeed(OpenAiClientChat.OpenAiClient, spending.client),
-      ),
-    ),
-    Effect.result,
+  return yield* review(options.request).pipe(
+    Effect.provideService(ReviewRepository, ReviewContext.make(options.snapshot)),
+    Effect.provideService(OpenAiClientChat.OpenAiClient, spending.client),
   );
-
-  if (Result.isFailure(outcomeResult)) return skipFromReviewError(outcomeResult.failure);
-  return { _tag: "Completed", outcome: outcomeResult.success } satisfies ReviewRun;
 });
 
-const runMuseReview = Effect.fnUntraced(function*(options: {
-  readonly request: Review.ReviewRequest;
-  readonly snapshot: Snapshot;
-  readonly apiKey: Redacted.Redacted<string>;
-  readonly sessionId: string;
-  readonly limitMicrousd: number;
-  readonly guidance: string | undefined;
-}) {
-  const spendingResult = yield* museBudget.make(options.limitMicrousd).pipe(
+const runMuseReview = Effect.fnUntraced(function*(options: Options) {
+  const spending = yield* museBudget.make(options.limitMicrousd).pipe(
     Effect.provide(
       OpenCode.responsesClientLayer({ apiKey: options.apiKey, sessionId: options.sessionId }),
     ),
-    Effect.result,
   );
-
-  if (Result.isFailure(spendingResult)) return skipFromReviewError(spendingResult.failure);
-  const spending = spendingResult.success;
 
   const { review } = Review.makeReviewer({
     model: OpenAiLanguageModel.model(OpenCode.MUSE_MODEL, { useItemReferences: false }),
@@ -93,31 +73,19 @@ const runMuseReview = Effect.fnUntraced(function*(options: {
     guidance: options.guidance,
   });
 
-  const outcomeResult = yield* review(options.request).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        ReviewContext.layer(options.snapshot),
-        Layer.succeed(OpenAiClientResponses.OpenAiClient, spending.client),
-      ),
-    ),
-    Effect.result,
+  return yield* review(options.request).pipe(
+    Effect.provideService(ReviewRepository, ReviewContext.make(options.snapshot)),
+    Effect.provideService(OpenAiClientResponses.OpenAiClient, spending.client),
   );
-
-  if (Result.isFailure(outcomeResult)) return skipFromReviewError(outcomeResult.failure);
-  return { _tag: "Completed", outcome: outcomeResult.success } satisfies ReviewRun;
 });
 
-export const runReview = Effect.fn("ReviewRuntime.runReview")(function*(options: {
-  readonly request: Review.ReviewRequest;
-  readonly snapshot: Snapshot;
-  readonly apiKey: Redacted.Redacted<string>;
-  readonly sessionId: string;
-  readonly model: string;
-  readonly limitMicrousd: number;
-  readonly guidance: string | undefined;
-}) {
-  if (OpenCode.transportForModel(options.model) === "responses") {
-    return yield* runMuseReview(options);
-  }
-  return yield* runChatReview(options);
-});
+export const runReview = Effect.fn("ReviewRuntime.runReview")(
+  function*(options: Options) {
+    if (OpenCode.transportForModel(options.model) === "responses") {
+      return yield* runMuseReview(options);
+    }
+    return yield* runChatReview(options);
+  },
+  Effect.map((outcome): ReviewRun => ({ _tag: "Completed", outcome })),
+  Effect.catch((error) => Effect.succeed(skipFromReviewError(error))),
+);

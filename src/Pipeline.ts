@@ -38,10 +38,12 @@ const admit = (files: ReadonlyArray<ChangedFile>, exclude: (path: string) => boo
 };
 
 const readRepoFile = Effect.fn("Pipeline.readRepoFile")(function*(snapshot: SnapshotType) {
-  const text = yield* snapshot.read("base", Settings.REPO_FILE_PATH).pipe(Effect.option);
-  if (Option.isNone(text) || Option.isNone(text.value)) return Option.none<Settings.RepoFile>();
+  const text = yield* snapshot.read("base", Settings.REPO_FILE_PATH).pipe(
+    Effect.catchTag("ReviewContextError", () => Effect.succeedNone),
+  );
+  if (Option.isNone(text)) return Option.none<Settings.RepoFile>();
   return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Settings.RepoFile))(
-    text.value.value,
+    text.value,
   ).pipe(
     Effect.map(Option.some),
     Effect.catch((error) =>
@@ -159,5 +161,5 @@ export const run = Effect.fn("Pipeline.run")(function*(options: {
     _tag: "Published",
     headSha,
     findings: outcome.report.findings.length,
-  } satisfies Result as Result;
+  } satisfies Result;
 });

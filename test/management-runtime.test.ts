@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Exit, Fiber, Layer, Redacted } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -38,6 +39,15 @@ it.effect("loadEnvironment surfaces non-ENOENT load failures", () => {
       expect(error.message).toBe("Failed to load environment file");
     }),
   );
+});
+
+it.effect("loadEnvironment ignores ENOENT when code is non-enumerable", () => {
+  vi.spyOn(process, "loadEnvFile").mockImplementation(() => {
+    const error = new Error("missing env file");
+    Object.defineProperty(error, "code", { value: "ENOENT", enumerable: false });
+    throw error;
+  });
+  return loadEnvironment();
 });
 
 it.live("loadEnvironment keeps shell env over dotenv file", () =>
@@ -133,27 +143,26 @@ it.live("Runtime.run interruption cancels a long-running child", () =>
   }).pipe(Effect.provide(layer), Effect.scoped));
 
 it.effect("Runtime.health checks origin root body", () => {
-  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+  const fetch: typeof globalThis.fetch = (input) => {
     const url = input instanceof Request ? input.url : new URL(input).href;
     expect(url).toBe("https://reviewer.example/");
     return Promise.resolve(new Response("reviewer\n", { status: 200 }));
-  });
+  };
 
   return Effect.gen(function*() {
     const runtime = yield* Runtime;
     expect(yield* runtime.health("https://reviewer.example/path")).toBe(true);
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
 });
 
 it.effect("Runtime.health returns false when the body does not match", () => {
-  vi.spyOn(globalThis, "fetch").mockImplementation(() =>
-    Promise.resolve(new Response("other", { status: 200 }))
-  );
+  const fetch: typeof globalThis.fetch = () =>
+    Promise.resolve(new Response("other", { status: 200 }));
 
   return Effect.gen(function*() {
     const runtime = yield* Runtime;
     expect(yield* runtime.health("https://reviewer.example")).toBe(false);
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
 });
 
 it.effect("githubToken reads GITHUB_TOKEN from config", () =>
@@ -226,6 +235,115 @@ it.effect("githubToken rejects empty configured tokens", () =>
     ),
   ));
 
+it.effect("githubToken preserves padded configured values without calling gh", () =>
+  Effect.gen(function*() {
+    const token = yield* githubToken;
+    expect(Redacted.value(token)).toBe("  cfg-token  ");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(Runtime, {
+          run: () => Effect.die("gh should not run"),
+          health: () => Effect.succeed(false),
+        }),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ GITHUB_TOKEN: "  cfg-token  " })),
+      ),
+    ),
+  ));
+
+it.effect("githubToken treats blank GITHUB_TOKEN as missing and uses gh", () =>
+  Effect.gen(function*() {
+    const token = yield* githubToken;
+    expect(Redacted.value(token)).toBe("gh-token");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(Runtime, {
+          run: (command, args) => {
+            expect(command).toBe("gh");
+            expect(args).toEqual(["auth", "token", "--hostname", "github.com"]);
+            return Effect.succeed("gh-token\n");
+          },
+          health: () => Effect.succeed(false),
+        }),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ GITHUB_TOKEN: "" })),
+      ),
+    ),
+  ));
+
+it.effect("githubToken trims gh stdout before validating", () =>
+  Effect.gen(function*() {
+    const token = yield* githubToken;
+    expect(Redacted.value(token)).toBe("gh-token");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(Runtime, {
+          run: () => Effect.succeed("  gh-token  \n"),
+          health: () => Effect.succeed(false),
+        }),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({})),
+      ),
+    ),
+  ));
+
+it.effect("githubToken rejects blank gh stdout", () =>
+  Effect.gen(function*() {
+    const error = yield* githubToken.pipe(Effect.flip);
+    expect(error.message).toBe(
+      "GitHub token missing; set GITHUB_TOKEN or run gh auth login",
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(Runtime, {
+          run: () => Effect.succeed("   \n"),
+          health: () => Effect.succeed(false),
+        }),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({})),
+      ),
+    ),
+  ));
+
+it.effect("githubToken whitespace errors avoid raw schema diagnostics", () =>
+  Effect.gen(function*() {
+    const error = yield* githubToken.pipe(Effect.flip);
+    expect(error.message).toBe("GITHUB_TOKEN is set but empty");
+    expect(error.message).not.toMatch(/ConfigError|SchemaError|Expected/);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(Runtime, {
+          run: () => Effect.die("gh should not run"),
+          health: () => Effect.succeed(false),
+        }),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ GITHUB_TOKEN: "     " })),
+      ),
+    ),
+  ));
+
+it.effect("githubToken whitespace-only env does not fall back to gh", () => {
+  let ghCalled = false;
+  return Effect.gen(function*() {
+    const error = yield* githubToken.pipe(Effect.flip);
+    expect(ghCalled).toBe(false);
+    expect(error.message).toBe("GITHUB_TOKEN is set but empty");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(Runtime, {
+          run: () => {
+            ghCalled = true;
+            return Effect.succeed("gh-token");
+          },
+          health: () => Effect.succeed(false),
+        }),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ GITHUB_TOKEN: "   " })),
+      ),
+    ),
+  );
+});
+
 it.effect("opencodeKey reads OPENCODE_API_KEY from config", () =>
   Effect.gen(function*() {
     const key = yield* opencodeKey;
@@ -241,6 +359,29 @@ it.effect("opencodeKey fails with a useful hint when missing", () =>
     const error = yield* opencodeKey.pipe(Effect.flip);
     expect(error.message).toContain(".env OPENCODE_API_KEY");
   }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({})))));
+
+it.effect("opencodeKey preserves padded configured values", () =>
+  Effect.gen(function*() {
+    const key = yield* opencodeKey;
+    expect(Redacted.value(key)).toBe("  oc-key  ");
+  }).pipe(
+    Effect.provide(
+      ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_API_KEY: "  oc-key  " })),
+    ),
+  ));
+
+it.effect("opencodeKey rejects whitespace-only values without echoing them", () =>
+  Effect.gen(function*() {
+    const error = yield* opencodeKey.pipe(Effect.flip);
+    expect(error.message).toBe(
+      "OPENCODE_API_KEY is set but empty; check your .env OPENCODE_API_KEY",
+    );
+    expect(error.message).not.toMatch(/SchemaError|Expected/);
+  }).pipe(
+    Effect.provide(
+      ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_API_KEY: "     " })),
+    ),
+  ));
 
 const waitForPath = (path: string): Effect.Effect<void> =>
   Effect.callback<void>((resume) => {

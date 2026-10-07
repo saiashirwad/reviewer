@@ -143,6 +143,12 @@ it.effect("pull numbers must be positive safe integers", () =>
     }
   }));
 
+it.effect("parsePull accepts leading zeros in pull numbers", () =>
+  Effect.gen(function*() {
+    const parsed = yield* Management.parsePull("acme/widget#0042");
+    expect(parsed).toEqual({ owner: "acme", repository: "widget", number: 42 });
+  }));
+
 it.effect("addRepo and removeRepo preserve overrides and casing", () =>
   Effect.gen(function*() {
     const manifest = yield* decodeManifest({

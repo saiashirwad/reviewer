@@ -64,8 +64,8 @@ const writeManifestAtomic = Effect.fn("Commands.writeManifestAtomic")(function*(
   );
 });
 
-const isEexist = (error: unknown): boolean =>
-  typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+const NodeEexist = Schema.Struct({ code: Schema.Literal("EEXIST") });
+const isEexist = Schema.is(NodeEexist);
 
 const lockHeldError = new CliError({
   message:

@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaTransformation } from "effect";
 import type { ParseOptions } from "effect/SchemaAST";
 import { RepoFile } from "./Settings.ts";
 
@@ -37,15 +37,11 @@ const HttpsOrigin = Schema.String.check(
   }),
 );
 
-const PullNumber = Schema.Int.check(
-  Schema.makeFilter((n) =>
-    n >= 1 && Number.isSafeInteger(n)
-      ? undefined
-      : { path: [], issue: "expected a positive safe integer" }
-  ),
-);
+const PullNumber = Schema.Int.check(Schema.isGreaterThan(0));
 
-const PullDigits = Schema.String.check(Schema.isPattern(/^\d+$/));
+const PullDigits = Schema.String.check(Schema.isPattern(/^\d+$/)).pipe(
+  Schema.decodeTo(PullNumber, SchemaTransformation.numberFromString),
+);
 
 const RepoPair = Schema.Tuple([OwnerName, RepositoryName]);
 const PullTriple = Schema.Tuple([OwnerName, RepositoryName, PullDigits]);
@@ -138,8 +134,7 @@ export const parsePull = Effect.fn("Management.parsePull")(function*(input: stri
   if (match === null) {
     return yield* invalid(input, "expected owner/repository#number or a GitHub pull URL");
   }
-  const [owner, repository, digits] = yield* Schema.decodeUnknownEffect(PullTriple)(match.slice(1));
-  const number = yield* Schema.decodeUnknownEffect(PullNumber)(Number(digits));
+  const [owner, repository, number] = yield* Schema.decodeUnknownEffect(PullTriple)(match.slice(1));
   return { owner, repository, number };
 });
 

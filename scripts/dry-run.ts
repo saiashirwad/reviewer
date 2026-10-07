@@ -9,11 +9,11 @@ import * as Settings from "../src/Settings.ts";
 import * as Snapshot from "../src/Snapshot.ts";
 import * as LocalSql from "./LocalSql.ts";
 import * as Runtime from "./management/Runtime.ts";
+import * as ReviewArgs from "./ReviewArgs.ts";
 
-const [target, modelOverride, ...extra] = process.argv.slice(2);
-const usage = "usage: pnpm review <owner/repo#123 | GitHub PR URL> [model] (never posts)";
-if (target === "--help" || target === "-h") {
-  console.log(usage);
+const argv = process.argv.slice(2);
+if (argv[0] === "--help" || argv[0] === "-h") {
+  console.log(ReviewArgs.dryRunUsage);
   process.exit(0);
 }
 
@@ -36,13 +36,15 @@ const printReviews = Layer.effect(
   }),
 );
 
-const program = Effect.gen(function*() {
-  if (target === undefined || extra.length > 0) {
-    return yield* new Runtime.CliError({ message: usage });
-  }
-  const ref = yield* Management.parsePull(target);
+const runReview = Effect.fn("dryRun.runReview")(function*(
+  args: { readonly target: string; readonly modelOverride?: string; },
+) {
+  const ref = yield* Management.parsePull(args.target);
   const configured = config.repos.find((entry) => Management.repoIdentityEquals(entry, ref));
-  const entry = { ...(configured ?? ref), ...(modelOverride ? { model: modelOverride } : {}) };
+  const entry = {
+    ...(configured ?? ref),
+    ...(args.modelOverride ? { model: args.modelOverride } : {}),
+  };
   const token = yield* Runtime.githubToken;
   const opencodeApiKey = yield* Runtime.opencodeKey;
   const sql = LocalSql.make();
@@ -59,7 +61,8 @@ const program = Effect.gen(function*() {
 
 NodeRuntime.runMain(
   Effect.gen(function*() {
+    const args = yield* ReviewArgs.decodeDryRunArgv(argv);
     yield* Runtime.loadEnvironment();
-    yield* program.pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv())));
+    yield* runReview(args).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv())));
   }).pipe(Effect.provide(Layer.mergeAll(Runtime.layer, FetchHttpClient.layer))),
 );

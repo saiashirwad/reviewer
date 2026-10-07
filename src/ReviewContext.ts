@@ -6,7 +6,7 @@ import {
   ReviewSearchResult,
   ReviewSource,
 } from "@yielded/agent-pr-review/review-repository";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Option } from "effect";
 import type { Revision, Snapshot } from "./snapshot/types.ts";
 
 const MAX_LISTED_PATHS = 100;
@@ -20,33 +20,32 @@ const missing = (path: string, revision: Revision) =>
 
 export const make = (snapshot: Snapshot) =>
   ReviewRepository.of({
-    readFile: (input) =>
-      snapshot.read(input.revision, input.path).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.fail(missing(input.path, input.revision)),
-            onSome: (text) => ReviewSource.fromText(input, text),
-          }),
+    readFile: Effect.fn("ReviewContext.readFile")(
+      function*(input) {
+        const text = yield* snapshot.read(input.revision, input.path);
+        if (Option.isNone(text)) return yield* missing(input.path, input.revision);
+        return yield* ReviewSource.fromText(input, text.value);
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("Source read failed", {
+              path: input.path,
+              revision: input.revision,
+              message: error.message,
+            })
+          ),
         ),
-        Effect.tapError((error) =>
-          Effect.logWarning("Source read failed", {
-            path: input.path,
-            revision: input.revision,
-            message: error.message,
-          })
-        ),
-      ),
+    ),
 
-    findFiles: ({ query, revision }) =>
-      snapshot.paths(revision).pipe(
-        Effect.map((paths) => {
-          const matches = paths.filter((path) => path.includes(query));
-          return ReviewFileList.make({
-            paths: matches.slice(0, MAX_LISTED_PATHS),
-            truncated: matches.length > MAX_LISTED_PATHS,
-          });
-        }),
-      ),
+    findFiles: Effect.fn("ReviewContext.findFiles")(function*({ query, revision }) {
+      const paths = yield* snapshot.paths(revision);
+      const matches = paths.filter((path) => path.includes(query));
+      return ReviewFileList.make({
+        paths: matches.slice(0, MAX_LISTED_PATHS),
+        truncated: matches.length > MAX_LISTED_PATHS,
+      });
+    }),
 
     searchCode: Effect.fn("ReviewContext.searchCode")(function*({ query, path, revision, cursor }) {
       const candidates = (yield* snapshot.paths(revision)).filter((p) => p.includes(path));
@@ -56,8 +55,9 @@ export const make = (snapshot: Snapshot) =>
       let truncated = false;
 
       for (const file of page) {
-        const row = yield* snapshot.read(revision, file).pipe(Effect.option);
-        const text = Option.isNone(row) ? Option.none<string>() : row.value;
+        const text = yield* snapshot.read(revision, file).pipe(
+          Effect.catchTag("ReviewContextError", () => Effect.succeedNone),
+        );
         if (Option.isNone(text)) {
           if (unreadablePaths.length < MAX_UNREADABLE_PATHS) unreadablePaths.push(file);
           continue;
@@ -90,5 +90,3 @@ export const make = (snapshot: Snapshot) =>
       });
     }),
   });
-
-export const layer = (snapshot: Snapshot) => Layer.succeed(ReviewRepository, make(snapshot));

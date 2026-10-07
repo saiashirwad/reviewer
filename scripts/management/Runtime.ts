@@ -1,4 +1,5 @@
 import { Config, Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { spawn } from "node:child_process";
 
 const STDOUT_MAX_BYTES = 1_048_576;
@@ -14,8 +15,30 @@ const ghLoginUnavailable = new CliError({
   message: "GitHub login unavailable; run gh auth login --hostname github.com or set GITHUB_TOKEN",
 });
 
-const isEnoent = (error: unknown): boolean =>
-  typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+const NodeEnoent = Schema.Struct({ code: Schema.Literal("ENOENT") });
+const isEnoent = Schema.is(NodeEnoent);
+
+const NonWhitespaceSecret = Schema.String.check(Schema.isPattern(/\S/));
+const SecretRedacted = Schema.RedactedFromValue(NonWhitespaceSecret);
+
+const githubTokenFromEnv = Config.schema(SecretRedacted, "GITHUB_TOKEN");
+const opencodeKeyFromEnv = Config.schema(SecretRedacted, "OPENCODE_API_KEY");
+
+const mapGithubTokenConfigError = (error: Config.ConfigError): CliError =>
+  error.cause._tag === "SchemaError"
+    ? new CliError({ message: "GITHUB_TOKEN is set but empty" })
+    : new CliError({ message: "Invalid GITHUB_TOKEN configuration" });
+
+const opencodeKeyMissing = new CliError({
+  message: "OPENCODE_API_KEY missing; set .env OPENCODE_API_KEY or export it",
+});
+
+const opencodeKeyEmpty = new CliError({
+  message: "OPENCODE_API_KEY is set but empty; check your .env OPENCODE_API_KEY",
+});
+
+const mapOpencodeKeyConfigError = (error: Config.ConfigError): CliError =>
+  error.cause._tag === "SchemaError" ? opencodeKeyEmpty : opencodeKeyMissing;
 
 const mergeEnv = (
   base: NodeJS.ProcessEnv,
@@ -118,39 +141,17 @@ const spawnCommand = Effect.fn("Runtime.run")(function*(
   );
 });
 
-const checkHealth = Effect.fn("Runtime.health")(function*(url: string) {
-  const target = `${new URL(url).origin}/`;
-
-  return yield* Effect.callback<boolean, CliError>((resume, interruptSignal) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, HEALTH_TIMEOUT_MS);
-    const onInterrupt = () => {
-      controller.abort();
-    };
-    interruptSignal.addEventListener("abort", onInterrupt);
-
-    void fetch(target, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) {
-          resume(Effect.succeed(false));
-          return;
-        }
-        const body = (await response.text()).trim();
-        resume(Effect.succeed(body === "reviewer"));
-      })
-      .catch(() => {
-        resume(Effect.fail(commandFailed));
-      });
-
-    return Effect.sync(() => {
-      clearTimeout(timeout);
-      interruptSignal.removeEventListener("abort", onInterrupt);
-      controller.abort();
-    });
-  });
-});
+const makeCheckHealth = (client: HttpClient.HttpClient) =>
+  Effect.fn("Runtime.health")(
+    function*(url: string) {
+      const response = yield* client.get(`${new URL(url).origin}/`);
+      if (response.status < 200 || response.status >= 300) return false;
+      const body = yield* response.text;
+      return body.trim() === "reviewer";
+    },
+    Effect.timeout(HEALTH_TIMEOUT_MS),
+    Effect.mapError(() => commandFailed),
+  );
 
 export interface RuntimeInterface {
   readonly run: (
@@ -168,10 +169,13 @@ export class Runtime extends Context.Service<Runtime, RuntimeInterface>()(
   "@reviewer/management/Runtime",
 ) {}
 
-export const layer = Layer.succeed(Runtime, {
-  run: spawnCommand,
-  health: checkHealth,
-});
+export const layer = Layer.effect(
+  Runtime,
+  Effect.gen(function*() {
+    const client = yield* HttpClient.HttpClient;
+    return Runtime.of({ run: spawnCommand, health: makeCheckHealth(client) });
+  }),
+).pipe(Layer.provide(FetchHttpClient.layer));
 
 export const loadEnvironment = (
   path?: string,
@@ -186,52 +190,41 @@ export const loadEnvironment = (
     Effect.catchIf((error) => error === "ENOENT", () => Effect.void),
   );
 
-const nonEmptyRedacted = (
-  value: Redacted.Redacted<string>,
-  message: string,
-): Effect.Effect<Redacted.Redacted<string>, CliError> => {
-  if (Redacted.value(value).trim().length === 0) {
-    return Effect.fail(new CliError({ message }));
-  }
-  return Effect.succeed(value);
-};
+const decodeGhStdoutToken = (output: string) =>
+  Schema.decodeUnknownEffect(SecretRedacted)(output.trim()).pipe(
+    Effect.mapError(
+      () =>
+        new CliError({
+          message: "GitHub token missing; set GITHUB_TOKEN or run gh auth login",
+        }),
+    ),
+  );
 
 export const githubToken: Effect.Effect<Redacted.Redacted<string>, CliError, Runtime> = Effect.gen(
   function*() {
-    const configured = yield* Config.option(Config.Redacted("GITHUB_TOKEN")).pipe(
-      Effect.mapError(
-        () => new CliError({ message: "Invalid GITHUB_TOKEN configuration" }),
-      ),
+    const configured = yield* Config.option(githubTokenFromEnv).pipe(
+      Effect.mapError(mapGithubTokenConfigError),
     );
     if (Option.isSome(configured)) {
-      return yield* nonEmptyRedacted(
-        configured.value,
-        "GITHUB_TOKEN is set but empty",
-      );
+      return configured.value;
     }
 
     const runtime = yield* Runtime;
-    const token = yield* runtime.run("gh", ["auth", "token", "--hostname", "github.com"]).pipe(
-      Effect.map((output) => output.trim()),
+    const output = yield* runtime.run("gh", ["auth", "token", "--hostname", "github.com"]).pipe(
       Effect.mapError(() => ghLoginUnavailable),
     );
-    if (token.length === 0) {
-      return yield* Effect.fail(
-        new CliError({ message: "GitHub token missing; set GITHUB_TOKEN or run gh auth login" }),
-      );
-    }
-    return Redacted.make(token);
+    return yield* decodeGhStdoutToken(output);
   },
 );
 
-export const opencodeKey: Effect.Effect<Redacted.Redacted<string>, CliError> = Config.Redacted(
-  "OPENCODE_API_KEY",
-).pipe(
-  Effect.mapError(
-    () =>
-      new CliError({ message: "OPENCODE_API_KEY missing; set .env OPENCODE_API_KEY or export it" }),
-  ),
-  Effect.flatMap((key) =>
-    nonEmptyRedacted(key, "OPENCODE_API_KEY is set but empty; check your .env OPENCODE_API_KEY")
-  ),
+export const opencodeKey: Effect.Effect<Redacted.Redacted<string>, CliError> = Effect.gen(
+  function*() {
+    const configured = yield* Config.option(opencodeKeyFromEnv).pipe(
+      Effect.mapError(mapOpencodeKeyConfigError),
+    );
+    if (Option.isNone(configured)) {
+      return yield* Effect.fail(opencodeKeyMissing);
+    }
+    return configured.value;
+  },
 );
