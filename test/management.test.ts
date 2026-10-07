@@ -104,6 +104,39 @@ it.effect("manifest rejects unknown fields and duplicate repos", () =>
     expect(duplicates._tag).toBe("SchemaError");
   }));
 
+it.effect("manifest rejects malformed deployment URLs and nested setting typos", () =>
+  Effect.gen(function*() {
+    for (
+      const url of [
+        "https://bad host",
+        "http://example.com",
+        "https://token@example.com",
+        "https://example.com/path",
+        "https://example.com/?query=1",
+        "https://example.com/#fragment",
+      ]
+    ) {
+      const error = yield* Effect.flip(decodeManifest({
+        ...sampleManifest,
+        deployment: { ...sampleManifest.deployment, url },
+      }));
+      expect(error._tag).toBe("SchemaError");
+    }
+    const error = yield* Effect.flip(decodeManifest({
+      ...sampleManifest,
+      repos: [{ owner: "acme", repository: "widget", maxCostUSD: 0.5 }],
+    }));
+    expect(error._tag).toBe("SchemaError");
+  }));
+
+it.effect("pull numbers must be positive safe integers", () =>
+  Effect.gen(function*() {
+    for (const target of ["acme/widget#0", "acme/widget#9007199254740992"]) {
+      const error = yield* Effect.flip(Management.parsePull(target));
+      expect(error._tag).toBe("SchemaError");
+    }
+  }));
+
 it.effect("addRepo and removeRepo preserve overrides and casing", () =>
   Effect.gen(function*() {
     const manifest = yield* decodeManifest({
