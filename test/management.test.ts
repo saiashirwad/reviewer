@@ -31,6 +31,29 @@ it.effect("parseRepo rejects invalid targets", () =>
 
     const foreign = yield* Effect.flip(Management.parseRepo("https://gitlab.com/acme/widget"));
     expect(foreign._tag).toBe("InvalidTarget");
+
+    const normalizedTraversal = yield* Effect.flip(
+      Management.parseRepo("https://github.com/acme/../widget/repo"),
+    );
+    expect(normalizedTraversal._tag).toBe("InvalidTarget");
+
+    const encodedTraversal = yield* Effect.flip(
+      Management.parseRepo("https://github.com/acme/%2e%2e/widget"),
+    );
+    expect(encodedTraversal._tag).toBe("InvalidTarget");
+
+    const doubleSlash = yield* Effect.flip(
+      Management.parseRepo("https://github.com/acme//widget"),
+    );
+    expect(doubleSlash._tag).toBe("InvalidTarget");
+
+    const port = yield* Effect.flip(
+      Management.parseRepo("https://github.com:444/acme/widget"),
+    );
+    expect(port._tag).toBe("InvalidTarget");
+
+    const badOwner = yield* Effect.flip(Management.parseRepo("-leading/widget"));
+    expect(badOwner._tag).toBe("SchemaError");
   }));
 
 it.effect("parsePull accepts shorthand, URLs, and discussion fragments", () =>
@@ -44,7 +67,7 @@ it.effect("parsePull accepts shorthand, URLs, and discussion fragments", () =>
     expect(url).toEqual({ owner: "acme", repository: "widget", number: 99 });
   }));
 
-it.effect("parsePull rejects repo-only and traversal paths", () =>
+it.effect("parsePull rejects repo-only, traversal, and malformed shorthand", () =>
   Effect.gen(function*() {
     const repoOnly = yield* Effect.flip(Management.parsePull("acme/widget"));
     expect(repoOnly._tag).toBe("InvalidTarget");
@@ -53,6 +76,17 @@ it.effect("parsePull rejects repo-only and traversal paths", () =>
       Management.parsePull("https://github.com/acme/widget/pull/1/../secrets"),
     );
     expect(traversal._tag).toBe("InvalidTarget");
+
+    const wrongPull = yield* Effect.flip(
+      Management.parsePull("https://github.com/acme/widget/../repo/pull/1"),
+    );
+    expect(wrongPull._tag).toBe("InvalidTarget");
+
+    const queryShorthand = yield* Effect.flip(Management.parsePull("acme/widget#1?junk"));
+    expect(queryShorthand._tag).toBe("InvalidTarget");
+
+    const doubleHash = yield* Effect.flip(Management.parsePull("acme/widget#1#junk"));
+    expect(doubleHash._tag).toBe("InvalidTarget");
   }));
 
 it.effect("manifest rejects unknown fields and duplicate repos", () =>

@@ -3,59 +3,21 @@ import type { ParseOptions } from "effect/SchemaAST";
 
 export const strictManifestOptions: ParseOptions = { onExcessProperty: "error" };
 
-const slugSegmentIssue = { path: [] as const, issue: "invalid GitHub slug segment" };
+const OwnerName = Schema.String.check(
+  Schema.isMaxLength(39),
+  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/),
+);
 
-const isSlugSegment = (segment: string): boolean => {
-  if (segment.length === 0 || segment === "." || segment === "..") {
-    return false;
-  }
-  for (const char of segment) {
-    const code = char.charCodeAt(0);
-    const ok = (code >= 48 && code <= 57)
-      || (code >= 65 && code <= 90)
-      || (code >= 97 && code <= 122)
-      || char === "-" || char === "_" || char === ".";
-    if (!ok) {
-      return false;
-    }
-  }
-  return true;
-};
-
-const GitHubSlug = Schema.String.check(
-  Schema.makeFilter((segment) => isSlugSegment(segment) ? undefined : slugSegmentIssue),
+const RepositoryName = Schema.String.check(
+  Schema.isPattern(/^(?!\.$)(?!\.\.$)[A-Za-z0-9._-]+$/),
 );
 
 const SafeIdentifier = Schema.String.check(
-  Schema.makeFilter((value) =>
-    value.length > 0 && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(value)
-      ? undefined
-      : { path: [], issue: "expected a non-empty safe identifier" }
-  ),
+  Schema.isPattern(/^[a-zA-Z][a-zA-Z0-9_-]*$/),
 );
 
 const HttpsOrigin = Schema.String.check(
-  Schema.makeFilter((value) => {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      return { path: [], issue: "expected a valid HTTPS origin URL" };
-    }
-    if (url.protocol !== "https:") {
-      return { path: [], issue: "expected an HTTPS URL" };
-    }
-    if (url.username !== "" || url.password !== "") {
-      return { path: [], issue: "URL must not include credentials" };
-    }
-    if (url.search !== "" || url.hash !== "") {
-      return { path: [], issue: "URL must not include query or hash" };
-    }
-    if (url.pathname !== "" && url.pathname !== "/") {
-      return { path: [], issue: "URL must not include a path" };
-    }
-    return undefined;
-  }),
+  Schema.isPattern(/^https:\/\/[^/?#@:]+(?::443)?\/?$/),
 );
 
 const PullNumber = Schema.Int.check(
@@ -66,22 +28,27 @@ const PullNumber = Schema.Int.check(
   ),
 );
 
+const PullDigits = Schema.String.check(Schema.isPattern(/^\d+$/));
+
+const RepoPair = Schema.Tuple([OwnerName, RepositoryName]);
+const PullTriple = Schema.Tuple([OwnerName, RepositoryName, PullDigits]);
+
 export const RepoRef = Schema.Struct({
-  owner: GitHubSlug,
-  repository: GitHubSlug,
+  owner: OwnerName,
+  repository: RepositoryName,
 });
 export type RepoRef = typeof RepoRef.Type;
 
 export const PullTarget = Schema.Struct({
-  owner: GitHubSlug,
-  repository: GitHubSlug,
+  owner: OwnerName,
+  repository: RepositoryName,
   number: PullNumber,
 });
 export type PullTarget = typeof PullTarget.Type;
 
 const RepoManifestEntry = Schema.Struct({
-  owner: GitHubSlug,
-  repository: GitHubSlug,
+  owner: OwnerName,
+  repository: RepositoryName,
   model: Schema.optionalKey(Schema.NonEmptyString),
   guidance: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(8_000))),
   exclude: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -130,55 +97,92 @@ export const repoIdentityKey = (ref: RepoRef): string =>
 export const repoIdentityEquals = (left: RepoRef, right: RepoRef): boolean =>
   repoIdentityKey(left) === repoIdentityKey(right);
 
-const decodeRepoRef = (owner: string, repository: string) =>
-  Schema.decodeUnknownEffect(RepoRef)({ owner, repository });
-
-const decodePullTarget = (owner: string, repository: string, number: number) =>
-  Schema.decodeUnknownEffect(PullTarget)({ owner, repository, number });
-
 const invalid = (input: string, message: string) =>
   Effect.fail(new InvalidTarget({ message, input }));
 
-const parsePullNumber = (segment: string): number | undefined => {
-  if (!/^\d+$/.test(segment)) {
-    return undefined;
-  }
-  const value = Number(segment);
-  if (!Number.isSafeInteger(value) || value < 1) {
-    return undefined;
-  }
-  return value;
-};
+const decodeRepoPair = (owner: string, repository: string) =>
+  Schema.decodeUnknownEffect(RepoPair)([owner, repository]).pipe(
+    Effect.map(([o, r]) => ({ owner: o, repository: r })),
+  );
 
-const githubPathSegments = (input: string): Effect.Effect<ReadonlyArray<string>, InvalidTarget> =>
+const decodePullParts = (owner: string, repository: string, digits: string) =>
   Effect.gen(function*() {
-    const trimmed = input.trim();
-    if (trimmed.length === 0) {
-      return yield* invalid(input, "expected a GitHub repository or pull request target");
-    }
-    let url: URL;
-    try {
-      url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-    } catch {
-      return yield* invalid(input, "expected a valid GitHub URL");
-    }
-    if (url.protocol !== "https:") {
+    const [o, r, d] = yield* Schema.decodeUnknownEffect(PullTriple)([owner, repository, digits]);
+    const number = yield* Schema.decodeUnknownEffect(PullNumber)(Number(d));
+    return { owner: o, repository: r, number };
+  });
+
+const isGitHubUrl = (input: string): boolean =>
+  input.includes("://") || /^github\.com(?:[/:]|$)/i.test(input);
+
+const toHttpsGitHub = (input: string): string => input.includes("://") ? input : `https://${input}`;
+
+const rejectUnsafeGitHubUrl = (input: string, raw: string): Effect.Effect<void, InvalidTarget> =>
+  Effect.gen(function*() {
+    if (!/^https:\/\//i.test(raw)) {
       return yield* invalid(input, "expected an HTTPS GitHub URL");
     }
-    if (url.username !== "" || url.password !== "") {
+    if (/@/.test(raw)) {
       return yield* invalid(input, "GitHub URL must not include credentials");
     }
-    if (url.search !== "") {
+    if (/\?/.test(raw)) {
       return yield* invalid(input, "GitHub URL must not include a query string");
     }
-    if (url.hostname.toLowerCase() !== "github.com") {
+    if (/github\.com:\d+/i.test(raw)) {
+      return yield* invalid(input, "GitHub URL must not include a port");
+    }
+    if (/%2[eEfF]/.test(raw)) {
+      return yield* invalid(input, "GitHub URL must not include encoded path segments");
+    }
+    const hostEnd = raw.search(/github\.com/i);
+    if (hostEnd === -1) {
       return yield* invalid(input, "expected a github.com URL");
     }
-    const segments = url.pathname.split("/").filter((segment) => segment.length > 0);
-    if (segments.some((segment) => !isSlugSegment(segment))) {
+    const pathStart = raw.indexOf("/", hostEnd + "github.com".length);
+    const path = pathStart === -1 ? "" : raw.slice(pathStart);
+    if (path.includes("//")) {
       return yield* invalid(input, "invalid path in GitHub URL");
     }
-    return segments;
+    for (const segment of path.split("/").filter((part) => part.length > 0)) {
+      if (segment === "." || segment === ".." || /%2[eE]/i.test(segment)) {
+        return yield* invalid(input, "invalid path in GitHub URL");
+      }
+    }
+  });
+
+const parseRepoUrl = (input: string): Effect.Effect<RepoRef, InvalidTarget | Schema.SchemaError> =>
+  Effect.gen(function*() {
+    const raw = toHttpsGitHub(input.trim());
+    yield* rejectUnsafeGitHubUrl(input, raw);
+    const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/i.exec(raw);
+    if (match === null) {
+      return yield* invalid(input, "expected https://github.com/owner/repository");
+    }
+    const owner = match[1];
+    const repository = match[2];
+    if (owner === undefined || repository === undefined) {
+      return yield* invalid(input, "expected https://github.com/owner/repository");
+    }
+    return yield* decodeRepoPair(owner, repository);
+  });
+
+const parsePullUrl = (
+  input: string,
+): Effect.Effect<PullTarget, InvalidTarget | Schema.SchemaError> =>
+  Effect.gen(function*() {
+    const raw = toHttpsGitHub(input.trim());
+    yield* rejectUnsafeGitHubUrl(input, raw);
+    const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?(?:#.*)?$/i.exec(raw);
+    if (match === null) {
+      return yield* invalid(input, "expected https://github.com/owner/repository/pull/number");
+    }
+    const owner = match[1];
+    const repository = match[2];
+    const digits = match[3];
+    if (owner === undefined || repository === undefined || digits === undefined) {
+      return yield* invalid(input, "expected https://github.com/owner/repository/pull/number");
+    }
+    return yield* decodePullParts(owner, repository, digits);
   });
 
 export const parseRepo = (
@@ -186,31 +190,22 @@ export const parseRepo = (
 ): Effect.Effect<RepoRef, InvalidTarget | Schema.SchemaError> =>
   Effect.gen(function*() {
     const trimmed = input.trim();
-    if (trimmed.includes("#")) {
-      return yield* invalid(input, "repository target must not include a pull number fragment");
+    if (isGitHubUrl(trimmed)) {
+      return yield* parseRepoUrl(trimmed);
     }
-    if (trimmed.includes("://") || trimmed.toLowerCase().startsWith("github.com")) {
-      const segments = yield* githubPathSegments(trimmed);
-      if (segments.length !== 2) {
-        return yield* invalid(input, "expected https://github.com/owner/repository");
-      }
-      const owner = segments[0];
-      const repository = segments[1];
-      if (owner === undefined || repository === undefined) {
-        return yield* invalid(input, "expected https://github.com/owner/repository");
-      }
-      return yield* decodeRepoRef(owner, repository);
-    }
-    const slash = trimmed.indexOf("/");
-    if (slash === -1) {
+    if (trimmed.includes("#") || trimmed.includes("?")) {
       return yield* invalid(input, "expected owner/repository");
     }
-    const owner = trimmed.slice(0, slash);
-    const repository = trimmed.slice(slash + 1);
-    if (repository.includes("/") || repository.length === 0 || owner.length === 0) {
+    const match = /^([^/]+)\/([^/]+)$/.exec(trimmed);
+    if (match === null) {
       return yield* invalid(input, "expected owner/repository");
     }
-    return yield* decodeRepoRef(owner, repository);
+    const owner = match[1];
+    const repository = match[2];
+    if (owner === undefined || repository === undefined) {
+      return yield* invalid(input, "expected owner/repository");
+    }
+    return yield* decodeRepoPair(owner, repository);
   });
 
 export const parsePull = (
@@ -218,36 +213,20 @@ export const parsePull = (
 ): Effect.Effect<PullTarget, InvalidTarget | Schema.SchemaError> =>
   Effect.gen(function*() {
     const trimmed = input.trim();
-    if (trimmed.includes("://") || trimmed.toLowerCase().startsWith("github.com")) {
-      const segments = yield* githubPathSegments(trimmed);
-      if (segments.length !== 4 || segments[2] !== "pull") {
-        return yield* invalid(input, "expected https://github.com/owner/repository/pull/number");
-      }
-      const pullSegment = segments[3];
-      const number = pullSegment === undefined ? undefined : parsePullNumber(pullSegment);
-      if (number === undefined) {
-        return yield* invalid(input, "expected a positive pull request number");
-      }
-      const owner = segments[0];
-      const repository = segments[1];
-      if (owner === undefined || repository === undefined) {
-        return yield* invalid(input, "expected https://github.com/owner/repository/pull/number");
-      }
-      return yield* decodePullTarget(owner, repository, number);
+    if (isGitHubUrl(trimmed)) {
+      return yield* parsePullUrl(trimmed);
     }
-    const hash = trimmed.indexOf("#");
-    if (hash === -1) {
+    const match = /^([^/]+)\/([^/#]+)#(\d+)$/.exec(trimmed);
+    if (match === null) {
       return yield* invalid(input, "expected owner/repository#number or a GitHub pull URL");
     }
-    const repoPart = trimmed.slice(0, hash);
-    const fragment = trimmed.slice(hash + 1);
-    const numberSegment = fragment.split("#")[0]?.split("?")[0] ?? "";
-    const number = parsePullNumber(numberSegment);
-    if (number === undefined) {
-      return yield* invalid(input, "expected a positive pull request number");
+    const owner = match[1];
+    const repository = match[2];
+    const digits = match[3];
+    if (owner === undefined || repository === undefined || digits === undefined) {
+      return yield* invalid(input, "expected owner/repository#number or a GitHub pull URL");
     }
-    const repo = yield* parseRepo(repoPart);
-    return yield* decodePullTarget(repo.owner, repo.repository, number);
+    return yield* decodePullParts(owner, repository, digits);
   });
 
 export const hasRepo = (manifest: Manifest, ref: RepoRef): boolean =>
