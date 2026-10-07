@@ -10,7 +10,7 @@ export default Alchemy.Stack(
     providers: Layer.mergeAll(Cloudflare.providers(), GitHub.providers()),
     state: Cloudflare.state(),
   },
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     const reviewer = yield* Reviewer;
     return { url: reviewer.url.as<string>() };
   }),

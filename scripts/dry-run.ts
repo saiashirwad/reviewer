@@ -24,10 +24,11 @@ const [, owner, repository, number] = match as unknown as [string, string, strin
 
 const printReviews = Layer.effect(
   GitHub.GitHub,
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     const github = yield* GitHub.GitHub;
     return GitHub.GitHub.of({
       ...github,
+      reviewBodies: () => Effect.succeed([]),
       createReview: (_ref, input) =>
         Effect.sync(() => {
           console.log(`\n${"=".repeat(80)}\nReview for ${input.commitId}\n${"=".repeat(80)}`);
@@ -40,7 +41,7 @@ const printReviews = Layer.effect(
   }),
 );
 
-const program = Effect.gen(function* () {
+const program = Effect.gen(function*() {
   const token = yield* Config.Redacted("GITHUB_TOKEN");
   const opencodeApiKey = yield* Config.Redacted("OPENCODE_API_KEY");
   const sql = LocalSql.make();

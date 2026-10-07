@@ -5,16 +5,17 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts",
-    "check": "pnpm typecheck && pnpm test",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm lint && pnpm fmt:check && pnpm test",
+    "prepare": "effect-tsgo patch --typescript --oxlint",
+    "lint": "oxlint --deny-warnings .",
+    "fmt": "dprint fmt",
+    "fmt:check": "dprint check",
     "smoke": "node scripts/smoke.ts",
     "review": "node scripts/dry-run.ts",
     "deploy": "alchemy deploy",
     "dev": "alchemy dev",
     "destroy": "alchemy destroy"
-  },
-  "engines": {
-    "node": ">=24"
   },
   "dependencies": {
     "@effect/ai-openai": "4.0.1",
@@ -28,8 +29,17 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261006.1",
     "@effect/platform-node": "4.0.1",
+    "@effect/tsgo": "0.50.0",
+    "@effect/vitest": "4.0.1",
     "@types/node": "^24.19.1",
     "alchemy": "2.0.0-beta.81",
-    "typescript": "^7.0.2"
+    "dprint": "0.60.1",
+    "oxlint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "typescript": "7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

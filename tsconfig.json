@@ -13,8 +13,24 @@
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
+    "plugins": [{
+      "name": "@effect/language-service",
+      "diagnostics": false,
+      "allowedUnstableApis": [
+        "effect/http",
+        "effect/ai",
+        "@effect/ai-openai",
+        "@effect/ai-openai-compat"
+      ]
+    }],
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["alchemy.run.ts", "reviewer.config.ts", "src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "alchemy.run.ts",
+    "reviewer.config.ts",
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "test/**/*.ts"
+  ]
 }

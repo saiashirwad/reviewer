@@ -16,7 +16,9 @@ const heading = (finding: Finding) =>
   `**${severityLabel[finding.severity]} · ${finding.category}: ${finding.title}**`;
 
 const listed = (finding: Finding) =>
-  `- ${heading(finding)} — \`${finding.path}${finding.line === undefined ? "" : `:${finding.line}`}\`\n\n  ${finding.body.replaceAll("\n", "\n  ")}`;
+  `- ${heading(finding)} — \`${finding.path}${
+    finding.line === undefined ? "" : `:${finding.line}`
+  }\`\n\n  ${finding.body.replaceAll("\n", "\n  ")}`;
 
 const thousands = (count: number) =>
   count >= 1_000 ? `${(count / 1_000).toFixed(1)}k` : String(count);
@@ -25,7 +27,9 @@ const footer = (outcome: Review.ReviewOutcome, unreviewed: ReadonlyArray<string>
   const { usage } = outcome;
   const notes = [
     `${outcome.turns} turns`,
-    `${thousands(usage.inputTokens)} input (${thousands(usage.cachedInputTokens)} cached) / ${thousands(usage.outputTokens)} output tokens`,
+    `${thousands(usage.inputTokens)} input (${thousands(usage.cachedInputTokens)} cached) / ${
+      thousands(usage.outputTokens)
+    } output tokens`,
     ...(usage.estimatedCostMicrousd === undefined
       ? []
       : [`~$${(usage.estimatedCostMicrousd / 1_000_000).toFixed(3)}`]),

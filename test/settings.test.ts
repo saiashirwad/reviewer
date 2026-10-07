@@ -1,21 +1,30 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, it } from "@effect/vitest";
 import * as Settings from "../src/Settings.ts";
 
-test("globs match segments, spans, and basenames", () => {
+it("globs match segments, spans, and basenames", () => {
   const matches = Settings.matcher(["dist/**", "*.min.js", "src/gen/*.ts", "pnpm-lock.yaml"]);
 
-  assert.equal(matches("dist/index.js"), true);
-  assert.equal(matches("dist/a/b/c.js"), true);
-  assert.equal(matches("app/vendor.min.js"), true);
-  assert.equal(matches("src/gen/types.ts"), true);
-  assert.equal(matches("src/gen/nested/types.ts"), false);
-  assert.equal(matches("packages/web/pnpm-lock.yaml"), true);
-  assert.equal(matches("src/index.ts"), false);
-  assert.equal(matches("distribution/index.js"), false);
+  expect(
+    [
+      "dist/index.js",
+      "dist/a/b/c.js",
+      "app/vendor.min.js",
+      "src/gen/types.ts",
+      "src/gen/nested/types.ts",
+      "packages/web/pnpm-lock.yaml",
+      "src/index.ts",
+      "distribution/index.js",
+    ].filter(matches),
+  ).toEqual([
+    "dist/index.js",
+    "dist/a/b/c.js",
+    "app/vendor.min.js",
+    "src/gen/types.ts",
+    "packages/web/pnpm-lock.yaml",
+  ]);
 });
 
-test("repo file overrides the model and extends exclusions", () => {
+it("repo file overrides the model and extends exclusions", () => {
   const settings = Settings.resolve(
     { model: "deepseek-v4.1-flash", repos: [] },
     { owner: "o", repository: "r", exclude: ["docs/**"] },
@@ -26,9 +35,11 @@ test("repo file overrides the model and extends exclusions", () => {
     guidance: "Focus on security.",
   });
 
-  assert.equal(applied.model, "kimi-k2.7-code");
-  assert.equal(applied.guidance, "Focus on security.");
-  assert.equal(applied.exclude.includes("pnpm-lock.yaml"), true);
-  assert.equal(applied.exclude.includes("docs/**"), true);
-  assert.equal(applied.exclude.includes("fixtures/**"), true);
+  expect(applied.model).toBe("kimi-k2.7-code");
+  expect(applied.guidance).toBe("Focus on security.");
+  const excluded = Settings.matcher(applied.exclude);
+  expect(["docs/guide.md", "fixtures/example.ts", "src/main.ts"].filter(excluded)).toEqual([
+    "docs/guide.md",
+    "fixtures/example.ts",
+  ]);
 });

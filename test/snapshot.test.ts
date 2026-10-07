@@ -1,13 +1,12 @@
-import assert from "node:assert/strict";
+import { expect, it } from "@effect/vitest";
+import { Effect, Layer, Option } from "effect";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { Effect, Layer, Option } from "effect";
-import * as LocalSql from "./support/LocalSql.ts";
 import { GitHub, GitHubError } from "../src/GitHub.ts";
 import * as Snapshot from "../src/Snapshot.ts";
+import * as LocalSql from "./support/LocalSql.ts";
 
 const head = {
   "src/kept.ts": "export const kept = 1;\n",
@@ -30,11 +29,13 @@ const tarball = () => {
     writeFileSync(target, content);
   }
   const archive = join(dir, "repo.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", dir, "root"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  execFileSync("tar", ["-czf", archive, "-C", dir, "root"], {
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
+  });
   return new Blob([readFileSync(archive)]).stream();
 };
 
-const fakeGitHub = (calls: { tarball: number; content: Array<string> }) =>
+const fakeGitHub = (calls: { tarball: number; content: Array<string>; }) =>
   Layer.succeed(
     GitHub,
     GitHub.of({
@@ -56,12 +57,12 @@ const files = [
   { filename: "src/renamed-new.ts", status: "renamed", previous_filename: "src/renamed-old.ts" },
 ];
 
-test("base is head with changed paths overlaid, fetched lazily and cached", async () => {
+it.effect("base is head with changed paths overlaid, fetched lazily and cached", () => {
   const sql = LocalSql.make();
   Snapshot.migrate(sql);
   const calls = { tarball: 0, content: [] as Array<string> };
 
-  const program = Effect.gen(function* () {
+  return Effect.gen(function*() {
     const load = () =>
       Snapshot.load({
         sql,
@@ -72,13 +73,13 @@ test("base is head with changed paths overlaid, fetched lazily and cached", asyn
       });
     const snapshot = yield* load();
 
-    assert.deepEqual(yield* snapshot.paths("head"), [
+    expect(yield* snapshot.paths("head")).toEqual([
       "src/added.ts",
       "src/changed.ts",
       "src/kept.ts",
       "src/renamed-new.ts",
     ]);
-    assert.deepEqual(yield* snapshot.paths("base"), [
+    expect(yield* snapshot.paths("base")).toEqual([
       "src/changed.ts",
       "src/kept.ts",
       "src/removed.ts",
@@ -88,25 +89,21 @@ test("base is head with changed paths overlaid, fetched lazily and cached", asyn
     const read = (revision: "base" | "head", path: string) =>
       snapshot.read(revision, path).pipe(Effect.map(Option.getOrUndefined));
 
-    assert.equal(yield* read("head", "src/changed.ts"), head["src/changed.ts"]);
-    assert.equal(yield* read("base", "src/changed.ts"), base["src/changed.ts"]);
-    assert.equal(yield* read("base", "src/kept.ts"), head["src/kept.ts"]);
-    assert.equal(yield* read("base", "src/added.ts"), undefined);
-    assert.equal(yield* read("base", "src/removed.ts"), base["src/removed.ts"]);
-    assert.equal(yield* read("head", "src/removed.ts"), undefined);
-    assert.equal(yield* read("base", "src/renamed-old.ts"), base["src/renamed-old.ts"]);
+    expect(yield* read("head", "src/changed.ts")).toBe("export const changed = 2;\n");
+    expect(yield* read("base", "src/changed.ts")).toBe("export const changed = 1;\n");
+    expect(yield* read("base", "src/kept.ts")).toBe("export const kept = 1;\n");
+    expect(yield* read("base", "src/added.ts")).toBeUndefined();
+    expect(yield* read("base", "src/removed.ts")).toBe("export const removed = 0;\n");
+    expect(yield* read("head", "src/removed.ts")).toBeUndefined();
+    expect(yield* read("base", "src/renamed-old.ts")).toBe("export const renamed = 4;\n");
 
-    // Cached base reads and an unchanged head never hit GitHub again.
     yield* read("base", "src/changed.ts");
     yield* load();
-  });
-
-  await Effect.runPromise(program.pipe(Effect.provide(fakeGitHub(calls))));
-
-  assert.equal(calls.tarball, 1);
-  assert.deepEqual(calls.content.sort(), [
-    "src/changed.ts",
-    "src/removed.ts",
-    "src/renamed-old.ts",
-  ]);
+    expect(calls.tarball).toBe(1);
+    expect(calls.content.sort()).toEqual([
+      "src/changed.ts",
+      "src/removed.ts",
+      "src/renamed-old.ts",
+    ]);
+  }).pipe(Effect.provide(fakeGitHub(calls)));
 });

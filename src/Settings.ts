@@ -27,7 +27,9 @@ export const DEFAULT_MAX_COST_USD = 0.5;
 export const RepoFile = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   model: Schema.optionalKey(Schema.NonEmptyString),
-  maxCostUsd: Schema.optionalKey(Schema.Number.check(Schema.isBetween({ minimum: 0.01, maximum: 5 }))),
+  maxCostUsd: Schema.optionalKey(
+    Schema.Number.check(Schema.isBetween({ minimum: 0.01, maximum: 5 })),
+  ),
   guidance: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(8_000))),
   exclude: Schema.optionalKey(Schema.Array(Schema.String)),
 });
@@ -78,10 +80,10 @@ export const matcher = (patterns: ReadonlyArray<string>) => {
         part === "**/" || part === "**"
           ? ".*"
           : part === "*"
-            ? "[^/]*"
-            : part === "?"
-              ? "[^/]"
-              : part.replace(/[.+^${}()|[\]\\]/g, "\\$&"),
+          ? "[^/]*"
+          : part === "?"
+          ? "[^/]"
+          : part.replace(/[.+^${}()|[\]\\]/g, "\\$&")
       )
       .join("");
     return { regex: new RegExp(`^${source}$`), basename: !pattern.includes("/") };

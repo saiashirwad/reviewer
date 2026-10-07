@@ -31,7 +31,7 @@ export const settle = (
   totals: Ref.Ref<Totals>,
   pricing: Pricing,
   reservation: number,
-  usage: { input: number; cached: number; output: number } | undefined,
+  usage: { input: number; cached: number; output: number; } | undefined,
 ) =>
   Ref.update(totals, (current) => {
     if (usage === undefined) {
@@ -41,10 +41,9 @@ export const settle = (
         spent: current.spent + reservation,
       };
     }
-    const cost =
-      (usage.input - usage.cached) * pricing.input +
-      usage.cached * pricing.cached +
-      usage.output * pricing.output;
+    const cost = (usage.input - usage.cached) * pricing.input
+      + usage.cached * pricing.cached
+      + usage.output * pricing.output;
     return {
       ...current,
       reserved: current.reserved - reservation,
@@ -70,7 +69,7 @@ export const costControl = (totals: Ref.Ref<Totals>): Review.ReviewCostControl =
           estimatedCostMicrousd: Math.ceil(current.spent),
           reservedCostMicrousd: Math.max(0, Math.ceil(current.reserved)),
         }),
-      }),
+      })
     ),
   ),
 });

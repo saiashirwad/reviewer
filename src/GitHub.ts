@@ -68,7 +68,7 @@ export class GitHub extends Context.Service<
 
 const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
-export const make = Effect.fn("GitHub.make")(function* (token: Redacted.Redacted<string>) {
+export const make = Effect.fn("GitHub.make")(function*(token: Redacted.Redacted<string>) {
   const client = (yield* HttpClient.HttpClient).pipe(
     HttpClient.mapRequest((request) =>
       request.pipe(
@@ -79,15 +79,14 @@ export const make = Effect.fn("GitHub.make")(function* (token: Redacted.Redacted
           "user-agent": "reviewer/0.1",
           "x-github-api-version": "2022-11-28",
         }),
-      ),
+      )
     ),
   );
 
   const fail = (operation: string) => (cause: unknown) => {
-    const status =
-      typeof cause === "object" && cause !== null && "response" in cause
-        ? (cause as { response?: { status?: number } }).response?.status
-        : undefined;
+    const status = typeof cause === "object" && cause !== null && "response" in cause
+      ? (cause as { response?: { status?: number; }; }).response?.status
+      : undefined;
     return new GitHubError({
       operation,
       message: cause instanceof Error ? cause.message : String(cause),
@@ -101,7 +100,7 @@ export const make = Effect.fn("GitHub.make")(function* (token: Redacted.Redacted
       .pipe(
         Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)),
         Effect.mapError(fail(operation)),
-      ) as Effect.Effect<S["Type"], GitHubError>;
+      );
 
   return GitHub.of({
     pull: ({ owner, repository, number }) =>
@@ -114,7 +113,7 @@ export const make = Effect.fn("GitHub.make")(function* (token: Redacted.Redacted
         Compare,
       ).pipe(Effect.map((compare) => compare.merge_base_commit.sha)),
 
-    files: Effect.fnUntraced(function* ({ owner, repository, number }) {
+    files: Effect.fnUntraced(function*({ owner, repository, number }) {
       const files: Array<ChangedFile> = [];
       for (let page = 1; page <= MAX_FILE_PAGES; page++) {
         const batch = yield* getJson(
@@ -147,19 +146,26 @@ export const make = Effect.fn("GitHub.make")(function* (token: Redacted.Redacted
             response.status === 404
               ? Effect.succeedNone
               : HttpClientResponse.filterStatusOk(response).pipe(
-                  Effect.flatMap((ok) => ok.text),
-                  Effect.map(Option.some),
-                ),
+                Effect.flatMap((ok) => ok.text),
+                Effect.map(Option.some),
+              )
           ),
           Effect.mapError(fail("content")),
         ),
 
-    reviewBodies: ({ owner, repository, number }) =>
-      getJson(
-        "reviews",
-        `/repos/${owner}/${repository}/pulls/${number}/reviews?per_page=100`,
-        Schema.Array(Review),
-      ).pipe(Effect.map((reviews) => reviews.flatMap(({ body }) => (body ? [body] : [])))),
+    reviewBodies: Effect.fnUntraced(function*({ owner, repository, number }) {
+      const bodies: Array<string> = [];
+      for (let page = 1;; page++) {
+        const reviews = yield* getJson(
+          "reviews",
+          `/repos/${owner}/${repository}/pulls/${number}/reviews?per_page=100&page=${page}`,
+          Schema.Array(Review),
+        );
+        bodies.push(...reviews.flatMap(({ body }) => (body ? [body] : [])));
+        if (reviews.length < 100) break;
+      }
+      return bodies;
+    }),
 
     createReview: ({ owner, repository, number }, input) =>
       HttpClientRequest.post(`/repos/${owner}/${repository}/pulls/${number}/reviews`).pipe(

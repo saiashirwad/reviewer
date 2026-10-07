@@ -1,5 +1,5 @@
-import { OpenAiClient as OpenAiClientChat, OpenAiLanguageModel } from "@effect/ai-openai-compat";
 import { OpenAiClient as OpenAiClientResponses } from "@effect/ai-openai";
+import { OpenAiClient as OpenAiClientChat, OpenAiLanguageModel } from "@effect/ai-openai-compat";
 import { Layer, type Redacted } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 

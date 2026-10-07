@@ -5,8 +5,8 @@
  */
 
 export type Entry =
-  | { readonly path: string; readonly text: string }
-  | { readonly path: string; readonly skipped: "binary" | "too-large" };
+  | { readonly path: string; readonly text: string; }
+  | { readonly path: string; readonly skipped: "binary" | "too-large"; };
 
 const BLOCK = 512;
 
@@ -91,7 +91,7 @@ const byteReader = (stream: ReadableStream<Uint8Array>) => {
 
 export async function* entries(
   gzipped: ReadableStream<Uint8Array>,
-  options: { readonly maxFileBytes: number },
+  options: { readonly maxFileBytes: number; },
 ): AsyncGenerator<Entry> {
   const reader = byteReader(
     gzipped.pipeThrough(new DecompressionStream("gzip") as ReadableWritablePair<Uint8Array>),
@@ -111,8 +111,7 @@ export async function* entries(
       if (type === "x" || type === "L") {
         const body = await reader.read(padded);
         if (body === undefined) return;
-        longPath =
-          type === "x" ? paxPath(body.subarray(0, size)) : field(body, 0, size);
+        longPath = type === "x" ? paxPath(body.subarray(0, size)) : field(body, 0, size);
         continue;
       }
 

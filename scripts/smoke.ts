@@ -3,11 +3,11 @@
  *
  *   OPENCODE_API_KEY=... node scripts/smoke.ts [model]
  */
+import { NodeRuntime } from "@effect/platform-node";
 import { Review } from "@yielded/agent-pr-review";
 import { Config, Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import assert from "node:assert/strict";
-import { NodeRuntime } from "@effect/platform-node";
 import * as OpenCode from "../src/OpenCode.ts";
 import * as ReviewRuntime from "../src/ReviewRuntime.ts";
 import { fromMaps } from "../src/Snapshot.ts";
@@ -42,7 +42,7 @@ const snapshot = fromMaps({
   ]),
 });
 
-const program = Effect.gen(function* () {
+const program = Effect.gen(function*() {
   const modelId = process.argv[2] ?? OpenCode.DEFAULT_MODEL;
   const apiKey = yield* Config.Redacted("OPENCODE_API_KEY");
   yield* Effect.log(`Reviewing with opencode-go/${modelId}`);

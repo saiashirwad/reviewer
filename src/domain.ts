@@ -22,7 +22,7 @@ export interface Job extends PullRef {
 }
 
 export type Result =
-  | { readonly _tag: "Published"; readonly headSha: string; readonly findings: number }
-  | { readonly _tag: "Skipped"; readonly reason: string };
+  | { readonly _tag: "Published"; readonly headSha: string; readonly findings: number; }
+  | { readonly _tag: "Skipped"; readonly reason: string; };
 
 export const skipped = (reason: string): Result => ({ _tag: "Skipped", reason });

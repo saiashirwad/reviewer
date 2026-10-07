@@ -33,7 +33,7 @@ export const make = (snapshot: Snapshot) =>
             path: input.path,
             revision: input.revision,
             message: error.message,
-          }),
+          })
         ),
       ),
 
@@ -48,7 +48,7 @@ export const make = (snapshot: Snapshot) =>
         }),
       ),
 
-    searchCode: Effect.fn("ReviewContext.searchCode")(function* ({ query, path, revision, cursor }) {
+    searchCode: Effect.fn("ReviewContext.searchCode")(function*({ query, path, revision, cursor }) {
       const candidates = (yield* snapshot.paths(revision)).filter((p) => p.includes(path));
       const page = candidates.slice(cursor, cursor + SEARCH_FILES_PER_PAGE);
       const matches: Array<ReviewSearchMatch> = [];

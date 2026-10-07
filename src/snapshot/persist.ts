@@ -1,8 +1,8 @@
 import type * as cf from "@cloudflare/workers-types";
 import { ReviewContextError } from "@yielded/agent-pr-review/review-repository";
 import { Effect, Option, Stream } from "effect";
-import { type ChangedFile, GitHub } from "../GitHub.ts";
 import type { RepositoryRef } from "../domain.ts";
+import { type ChangedFile, GitHub } from "../GitHub.ts";
 import * as Tarball from "../Tarball.ts";
 import { MAX_FILE_BYTES, type Revision, type Snapshot } from "./types.ts";
 
@@ -25,13 +25,13 @@ export const clear = (sql: cf.SqlStorage) => {
 };
 
 const meta = (sql: cf.SqlStorage, key: string) =>
-  sql.exec<{ value: string }>("SELECT value FROM snapshot_meta WHERE key = ?", key).toArray()[0]
+  sql.exec<{ value: string; }>("SELECT value FROM snapshot_meta WHERE key = ?", key).toArray()[0]
     ?.value;
 
 const setMeta = (sql: cf.SqlStorage, key: string, value: string) =>
   sql.exec("INSERT OR REPLACE INTO snapshot_meta (key, value) VALUES (?, ?)", key, value);
 
-const copyHead = Effect.fn("Snapshot.copyHead")(function* (
+const copyHead = Effect.fn("Snapshot.copyHead")(function*(
   sql: cf.SqlStorage,
   repo: RepositoryRef,
   headSha: string,
@@ -53,7 +53,7 @@ const copyHead = Effect.fn("Snapshot.copyHead")(function* (
       Effect.sync(() => {
         files += 1;
         insert(entry.path, "text" in entry ? entry.text : null);
-      }),
+      })
     ),
   );
 
@@ -80,10 +80,12 @@ const baseOverrides = (files: ReadonlyArray<ChangedFile>) => {
 
 const unreadable = (path: string, revision: Revision) =>
   ReviewContextError.make({
-    message: `${path} at ${revision} is binary or larger than ${MAX_FILE_BYTES / 1024} KiB and cannot be read.`,
+    message: `${path} at ${revision} is binary or larger than ${
+      MAX_FILE_BYTES / 1024
+    } KiB and cannot be read.`,
   });
 
-export const load = Effect.fn("Snapshot.load")(function* (options: {
+export const load = Effect.fn("Snapshot.load")(function*(options: {
   readonly sql: cf.SqlStorage;
   readonly repo: RepositoryRef;
   readonly headSha: string;
@@ -97,7 +99,7 @@ export const load = Effect.fn("Snapshot.load")(function* (options: {
   const overrides = baseOverrides(options.files);
 
   const headPaths = sql
-    .exec<{ path: string }>("SELECT path FROM snapshot_head ORDER BY path")
+    .exec<{ path: string; }>("SELECT path FROM snapshot_head ORDER BY path")
     .toArray()
     .map(({ path }) => path);
 
@@ -112,20 +114,20 @@ export const load = Effect.fn("Snapshot.load")(function* (options: {
 
   const readHead = (path: string): Option.Option<string | null> => {
     const row = sql
-      .exec<{ content: string | null }>("SELECT content FROM snapshot_head WHERE path = ?", path)
+      .exec<{ content: string | null; }>("SELECT content FROM snapshot_head WHERE path = ?", path)
       .toArray()[0];
     return row === undefined ? Option.none() : Option.some(row.content);
   };
 
-  const readBase = Effect.fnUntraced(function* (path: string) {
+  const readBase = Effect.fnUntraced(function*(path: string) {
     const cached = sql
-      .exec<{ content: string | null }>("SELECT content FROM snapshot_base WHERE path = ?", path)
+      .exec<{ content: string | null; }>("SELECT content FROM snapshot_base WHERE path = ?", path)
       .toArray()[0];
     if (cached !== undefined) return Option.some(cached.content);
 
     const fetched = yield* github.content(repo, path, mergeBase).pipe(
       Effect.mapError((error) =>
-        ReviewContextError.make({ message: `Could not fetch ${path} at base: ${error.message}` }),
+        ReviewContextError.make({ message: `Could not fetch ${path} at base: ${error.message}` })
       ),
     );
     if (Option.isNone(fetched)) return Option.none<string | null>();
@@ -140,8 +142,8 @@ export const load = Effect.fn("Snapshot.load")(function* (options: {
     Option.isNone(row)
       ? Effect.succeedNone
       : row.value === null
-        ? Effect.fail(unreadable(path, revision))
-        : Effect.succeedSome(row.value);
+      ? Effect.fail(unreadable(path, revision))
+      : Effect.succeedSome(row.value);
 
   const snapshot: Snapshot = {
     paths: (revision) => Effect.succeed(revision === "head" ? headPaths : basePaths),

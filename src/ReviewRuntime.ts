@@ -1,19 +1,19 @@
-import { Review } from "@yielded/agent-pr-review";
-import { OpenAiClient as OpenAiClientChat } from "@effect/ai-openai-compat";
 import { OpenAiClient as OpenAiClientResponses, OpenAiLanguageModel } from "@effect/ai-openai";
-import { Effect, Layer, Result, type Redacted } from "effect";
+import { OpenAiClient as OpenAiClientChat } from "@effect/ai-openai-compat";
+import { Review } from "@yielded/agent-pr-review";
+import { Effect, Layer, type Redacted, Result } from "effect";
 import { AiError } from "effect/ai";
 import * as museBudget from "./museBudget.ts";
 import * as OpenCode from "./OpenCode.ts";
 import * as ReviewContext from "./ReviewContext.ts";
-import * as Spending from "./Spending.ts";
 import type { Snapshot } from "./snapshot/types.ts";
+import * as Spending from "./Spending.ts";
 
 const CONTEXT_TOKEN_LIMIT = 128_000;
 
 export type ReviewRun =
-  | { readonly _tag: "Completed"; readonly outcome: Review.ReviewOutcome }
-  | { readonly _tag: "Skipped"; readonly reason: string };
+  | { readonly _tag: "Completed"; readonly outcome: Review.ReviewOutcome; }
+  | { readonly _tag: "Skipped"; readonly reason: string; };
 
 const skip = (reason: string): ReviewRun => ({ _tag: "Skipped", reason });
 
@@ -25,7 +25,7 @@ const skipFromReviewError = (error: unknown): ReviewRun => {
   return skip(error instanceof Error ? error.message : String(error));
 };
 
-const runChatReview = Effect.fnUntraced(function* (options: {
+const runChatReview = Effect.fnUntraced(function*(options: {
   readonly request: Review.ReviewRequest;
   readonly snapshot: Snapshot;
   readonly apiKey: Redacted.Redacted<string>;
@@ -68,7 +68,7 @@ const runChatReview = Effect.fnUntraced(function* (options: {
   return { _tag: "Completed", outcome: outcomeResult.success } satisfies ReviewRun;
 });
 
-const runMuseReview = Effect.fnUntraced(function* (options: {
+const runMuseReview = Effect.fnUntraced(function*(options: {
   readonly request: Review.ReviewRequest;
   readonly snapshot: Snapshot;
   readonly apiKey: Redacted.Redacted<string>;
@@ -107,7 +107,7 @@ const runMuseReview = Effect.fnUntraced(function* (options: {
   return { _tag: "Completed", outcome: outcomeResult.success } satisfies ReviewRun;
 });
 
-export const runReview = Effect.fn("ReviewRuntime.runReview")(function* (options: {
+export const runReview = Effect.fn("ReviewRuntime.runReview")(function*(options: {
   readonly request: Review.ReviewRequest;
   readonly snapshot: Snapshot;
   readonly apiKey: Redacted.Redacted<string>;

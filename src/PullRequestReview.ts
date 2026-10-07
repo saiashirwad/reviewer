@@ -2,8 +2,8 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect } from "effect";
 import { GITHUB_TOKEN, OPENCODE_API_KEY } from "./config/bindings.ts";
-import * as GitHub from "./GitHub.ts";
 import type { Job } from "./domain.ts";
+import * as GitHub from "./GitHub.ts";
 import * as Pipeline from "./Pipeline.ts";
 import * as Snapshot from "./Snapshot.ts";
 
@@ -21,20 +21,20 @@ export const key = (ref: GitHub.PullRef) => `${ref.owner}/${ref.repository}#${re
  */
 export class PullRequestReview extends Cloudflare.DurableObject<PullRequestReview>()(
   "PullRequestReview",
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     const state = yield* Cloudflare.DurableObjectState;
     // A missing secret is a deployment error, not something a review can recover from.
     // Same keys as Worker init — both orDie so Alchemy binds secrets on the script and DO.
     const githubToken = yield* Config.Redacted(GITHUB_TOKEN).pipe(Effect.orDie);
     const opencodeApiKey = yield* Config.Redacted(OPENCODE_API_KEY).pipe(Effect.orDie);
 
-    return Effect.gen(function* () {
+    return Effect.gen(function*() {
       const sql = state.storage.sql.raw;
       Snapshot.migrate(sql);
 
       const review = yield* Alchemy.makeCallback(
         "review",
-        Effect.fnUntraced(function* (job: Job) {
+        Effect.fnUntraced(function*(job: Job) {
           const attemptKey = `attempts:${job.headSha ?? "current"}`;
           const attempts = ((yield* state.storage.get<number>(attemptKey)) ?? 0) + 1;
           yield* state.storage.put(attemptKey, attempts);
@@ -46,7 +46,7 @@ export class PullRequestReview extends Cloudflare.DurableObject<PullRequestRevie
           const result = yield* Pipeline.run({ job, sql, opencodeApiKey }).pipe(
             Effect.provide(GitHub.layer(githubToken)),
             Effect.tapError((error) =>
-              Effect.logError("Review failed", { pull: key(job), attempts, error: String(error) }),
+              Effect.logError("Review failed", { pull: key(job), attempts, error: String(error) })
             ),
           );
 
@@ -60,7 +60,7 @@ export class PullRequestReview extends Cloudflare.DurableObject<PullRequestRevie
         enqueue: (job: Pipeline.Job) => review.schedule(JOB_ID, { after: 0, payload: job }),
         // Drops the copied source but keeps the scheduler's own tables intact.
         close: () =>
-          Effect.gen(function* () {
+          Effect.gen(function*() {
             yield* review.cancel(JOB_ID);
             Snapshot.clear(sql);
             const attempts = yield* state.storage.list({ prefix: "attempts:" });

@@ -10,10 +10,8 @@ import type { ReviewerConfig } from "./src/Settings.ts";
  */
 const config: ReviewerConfig = {
   model: "muse-spark-1.3-contributor",
-  /** An empty list skips webhook registration; the Worker health `fetch` still responds. */
   repos: [
-    // { owner: "saiashirwad", repository: "some-repo" },
-    // { owner: "saiashirwad", repository: "other-repo", model: "kimi-k2.7-code" },
+    { owner: "saiashirwad", repository: "parserator" },
   ],
 };
 

@@ -1,7 +1,7 @@
 import { OpenAiClient } from "@effect/ai-openai-compat";
 import { Data, Effect, Option, Ref, Stream } from "effect";
 import { AiError } from "effect/ai";
-import { costControl, emptyTotals, settle, type Pricing, type Totals } from "./budgetCore.ts";
+import { costControl, emptyTotals, type Pricing, settle, type Totals } from "./budgetCore.ts";
 
 export type { Pricing };
 
@@ -24,9 +24,11 @@ export const PRICING: Readonly<Record<string, Pricing>> = {
   hy3: { input: 0.14, cached: 0.035, output: 0.58 },
 };
 
-export class UnknownModel extends Data.TaggedError("UnknownModel")<{ readonly model: string }> {
+export class UnknownModel extends Data.TaggedError("UnknownModel")<{ readonly model: string; }> {
   override get message() {
-    return `${this.model} has no known OpenCode Go chat-completions price. Supported: ${Object.keys(PRICING).join(", ")}`;
+    return `${this.model} has no known OpenCode Go chat-completions price. Supported: ${
+      Object.keys(PRICING).join(", ")
+    }`;
   }
 }
 
@@ -42,10 +44,9 @@ interface ChatUsage {
 
 const cachedTokens = (usage: ChatUsage) => {
   const details = usage.prompt_tokens_details;
-  const cached =
-    typeof details === "object" && details !== null && "cached_tokens" in details
-      ? Number((details as { cached_tokens: unknown }).cached_tokens)
-      : 0;
+  const cached = typeof details === "object" && details !== null && "cached_tokens" in details
+    ? Number((details as { cached_tokens: unknown; }).cached_tokens)
+    : 0;
   return Number.isFinite(cached) ? Math.min(cached, usage.prompt_tokens) : 0;
 };
 
@@ -56,7 +57,7 @@ const refusal = (description: string) =>
     reason: AiError.InvalidRequestError.make({ description }),
   });
 
-export const make = Effect.fn("Spending.make")(function* (options: {
+export const make = Effect.fn("Spending.make")(function*(options: {
   readonly model: string;
   readonly limitMicrousd: number;
 }) {
@@ -66,8 +67,8 @@ export const make = Effect.fn("Spending.make")(function* (options: {
   const native = yield* OpenAiClient.OpenAiClient;
   const totals = yield* Ref.make<Totals>(emptyTotals());
 
-  const admit = <P extends { readonly [key: string]: unknown }>(payload: P) =>
-    Ref.modify(totals, (current): [Option.Option<{ payload: P; reservation: number }>, Totals] => {
+  const admit = <P extends { readonly [key: string]: unknown; }>(payload: P) =>
+    Ref.modify(totals, (current): [Option.Option<{ payload: P; reservation: number; }>, Totals] => {
       if (current.stopped) return [Option.none(), current];
 
       const inputEstimate = Math.ceil(
@@ -75,8 +76,9 @@ export const make = Effect.fn("Spending.make")(function* (options: {
       );
       const balance = options.limitMicrousd - current.spent - current.reserved;
       const affordable = Math.floor((balance - inputEstimate * pricing.input) / pricing.output);
-      const requested =
-        typeof payload.max_tokens === "number" ? payload.max_tokens : DEFAULT_MAX_OUTPUT_TOKENS;
+      const requested = typeof payload.max_tokens === "number"
+        ? payload.max_tokens
+        : DEFAULT_MAX_OUTPUT_TOKENS;
       const maxTokens = Math.min(requested, affordable);
 
       if (maxTokens < MIN_OUTPUT_TOKENS) return [Option.none(), { ...current, stopped: true }];
@@ -84,7 +86,11 @@ export const make = Effect.fn("Spending.make")(function* (options: {
       const reservation = inputEstimate * pricing.input + maxTokens * pricing.output;
       return [
         Option.some({ payload: { ...payload, max_tokens: maxTokens }, reservation }),
-        { ...current, modelCalls: current.modelCalls + 1, reserved: current.reserved + reservation },
+        {
+          ...current,
+          modelCalls: current.modelCalls + 1,
+          reserved: current.reserved + reservation,
+        },
       ];
     }).pipe(
       Effect.flatMap(
@@ -102,7 +108,7 @@ export const make = Effect.fn("Spending.make")(function* (options: {
 
   const client = OpenAiClient.OpenAiClient.of({
     ...native,
-    createResponse: Effect.fnUntraced(function* (original) {
+    createResponse: Effect.fnUntraced(function*(original) {
       const { payload, reservation } = yield* admit(original);
       const result = yield* native
         .createResponse(payload)
@@ -114,15 +120,15 @@ export const make = Effect.fn("Spending.make")(function* (options: {
         reservation,
         usage
           ? {
-              input: usage.prompt_tokens,
-              cached: cachedTokens(usage),
-              output: usage.completion_tokens,
-            }
+            input: usage.prompt_tokens,
+            cached: cachedTokens(usage),
+            output: usage.completion_tokens,
+          }
           : undefined,
       );
       return result;
     }),
-    createResponseStream: Effect.fnUntraced(function* (original) {
+    createResponseStream: Effect.fnUntraced(function*(original) {
       const { payload, reservation } = yield* admit(original);
       const [response, stream] = yield* native
         .createResponseStream(payload)
@@ -137,7 +143,7 @@ export const make = Effect.fn("Spending.make")(function* (options: {
               if (typeof event === "object" && event !== null && "usage" in event && event.usage) {
                 usage = event.usage as ChatUsage;
               }
-            }),
+            })
           ),
           Stream.ensuring(
             Effect.suspend(() =>
@@ -147,12 +153,12 @@ export const make = Effect.fn("Spending.make")(function* (options: {
                 reservation,
                 usage
                   ? {
-                      input: usage.prompt_tokens,
-                      cached: cachedTokens(usage),
-                      output: usage.completion_tokens,
-                    }
+                    input: usage.prompt_tokens,
+                    cached: cachedTokens(usage),
+                    output: usage.completion_tokens,
+                  }
                   : undefined,
-              ),
+              )
             ),
           ),
         ),

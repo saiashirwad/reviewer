@@ -1,8 +1,8 @@
 import type * as cf from "@cloudflare/workers-types";
 import { Review } from "@yielded/agent-pr-review";
 import { Effect, Option, type Redacted, Schema } from "effect";
+import { type Job, type Result, skipped } from "./domain.ts";
 import { type ChangedFile, GitHub } from "./GitHub.ts";
-import { skipped, type Job, type Result } from "./domain.ts";
 import * as Publish from "./Publish.ts";
 import * as ReviewRuntime from "./ReviewRuntime.ts";
 import * as Settings from "./Settings.ts";
@@ -20,12 +20,11 @@ const admit = (files: ReadonlyArray<ChangedFile>, exclude: (path: string) => boo
 
   for (const file of files) {
     const patch = file.patch;
-    const fits =
-      patch !== undefined &&
-      patch.length > 0 &&
-      patch.length <= Review.MAX_REVIEW_PATCH_CHARS &&
-      total + patch.length <= Review.MAX_REVIEW_TOTAL_PATCH_CHARS &&
-      changes.length < Review.MAX_REVIEW_FILES;
+    const fits = patch !== undefined
+      && patch.length > 0
+      && patch.length <= Review.MAX_REVIEW_PATCH_CHARS
+      && total + patch.length <= Review.MAX_REVIEW_TOTAL_PATCH_CHARS
+      && changes.length < Review.MAX_REVIEW_FILES;
 
     if (fits && !exclude(file.filename)) {
       changes.push(Review.ReviewChange.make({ path: file.filename, patch }));
@@ -38,7 +37,7 @@ const admit = (files: ReadonlyArray<ChangedFile>, exclude: (path: string) => boo
   return { changes, unreviewed: unreviewed.slice(0, MAX_UNREVIEWED_PATHS) };
 };
 
-const readRepoFile = Effect.fn("Pipeline.readRepoFile")(function* (snapshot: SnapshotType) {
+const readRepoFile = Effect.fn("Pipeline.readRepoFile")(function*(snapshot: SnapshotType) {
   const text = yield* snapshot.read("base", Settings.REPO_FILE_PATH).pipe(Effect.option);
   if (Option.isNone(text) || Option.isNone(text.value)) return Option.none<Settings.RepoFile>();
   return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Settings.RepoFile))(
@@ -46,14 +45,15 @@ const readRepoFile = Effect.fn("Pipeline.readRepoFile")(function* (snapshot: Sna
   ).pipe(
     Effect.map(Option.some),
     Effect.catch((error) =>
-      Effect.logWarning(`Ignoring invalid ${Settings.REPO_FILE_PATH}`, { error: String(error) }).pipe(
-        Effect.as(Option.none<Settings.RepoFile>()),
-      ),
+      Effect.logWarning(`Ignoring invalid ${Settings.REPO_FILE_PATH}`, { error: String(error) })
+        .pipe(
+          Effect.as(Option.none<Settings.RepoFile>()),
+        )
     ),
   );
 });
 
-export const run = Effect.fn("Pipeline.run")(function* (options: {
+export const run = Effect.fn("Pipeline.run")(function*(options: {
   readonly job: Job;
   readonly sql: cf.SqlStorage;
   readonly opencodeApiKey: Redacted.Redacted<string>;
@@ -145,7 +145,11 @@ export const run = Effect.fn("Pipeline.run")(function* (options: {
             message: error.message,
           }).pipe(
             Effect.andThen(
-              github.createReview(job, { commitId: headSha, body: rendered.bodyOnly, comments: [] }),
+              github.createReview(job, {
+                commitId: headSha,
+                body: rendered.bodyOnly,
+                comments: [],
+              }),
             ),
           ),
       ),

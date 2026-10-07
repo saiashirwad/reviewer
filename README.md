@@ -4,6 +4,25 @@ Personal GitHub PR reviewer using Effect 4, Yielded's existing PR-review engine,
 OpenCode Go, and Alchemy-managed Cloudflare Workers and Durable Objects.
 Requires Node 24+ and TypeScript 7+. Local scripts run directly with Node.
 
+## Development checks
+
+`pnpm install` patches TypeScript 7 and oxlint with `@effect/tsgo`. Versions are
+pinned to the supported integration matrix. The Effect language service powers
+oxlint's type-aware correctness rules; TypeScript diagnostics stay in `pnpm typecheck`.
+
+```sh
+pnpm check
+pnpm lint
+pnpm fmt
+pnpm fmt:check
+```
+
+`pnpm check` runs typecheck, oxlint, dprint's formatting check, and the Effect
+Vitest suite. `pnpm fmt` applies the pinned TypeScript, JSON, Markdown, and YAML
+formatters. The lockfile and generated local artifacts are excluded. HTTP and AI
+APIs already used by the application are explicitly allowed in the Effect plugin;
+other unstable APIs still produce diagnostics.
+
 ## Test a review without posting
 
 Export `OPENCODE_API_KEY` in your shell. Then run:
@@ -16,8 +35,10 @@ GITHUB_TOKEN="$(gh auth token)" pnpm review 'saiashirwad/parserator#23'
 
 `pnpm smoke` reviews a planted arithmetic bug and fails unless the model records
 it and completes. `pnpm review` fetches real GitHub data and uses your OpenCode Go
-account, but replaces the posting method with console output. Its `Published`
-result means it reached that method, not that GitHub received anything.
+account, but replaces the posting method with console output. It ignores existing
+review markers so you can rerun the same PR. Its `Published` result means it
+reached that method, not that GitHub received anything. Check the report for
+`incomplete`; a successful process exit alone does not prove completion.
 
 The default model is `muse-spark-1.3-contributor`. Muse uses the Responses API;
 chat models use OpenAI-compatible completions. Both paths go through
@@ -25,17 +46,32 @@ chat models use OpenAI-compatible completions. Both paths go through
 `src/Spending.ts`. The default budget is $0.50 in estimated
 OpenCode Go usage per review, not an additional subscription charge.
 
-## Deploy to selected repositories
+## Enroll a repository
 
-Deployment creates webhooks and enables automatic posting. No deployment has
-been performed yet. The latest dry run of parserator#23 read every patch but hit
-Yielded's five-minute deadline with zero recorded findings. That result is
-incomplete, not evidence that the PR has no bugs.
+Enrollment creates a GitHub webhook and enables automatic review posts. There is
+no enrollment UI or GitHub App. The deployed allowlist is `reviewer.config.ts`.
 
-1. Add your repositories to `reviewer.config.ts`.
+1. Add each repository to `reviewer.config.ts`:
+
+   ```ts
+   repos: [
+     { owner: "saiashirwad", repository: "parserator" },
+     { owner: "your-org", repository: "your-repo", maxCostUsd: 0.5 },
+   ];
+   ```
+
 2. Export `OPENCODE_API_KEY` and `GITHUB_TOKEN` in the deployment shell.
-3. Authenticate Cloudflare with `pnpm exec alchemy login`.
-4. Run `pnpm deploy`.
+3. Check your credentials with `pnpm exec alchemy profile show --profile admin`.
+   If you need a new profile, use `pnpm exec alchemy profile edit`.
+4. Redeploy the production stack:
+
+   ```sh
+   GITHUB_TOKEN="$(gh auth token)" pnpm exec alchemy deploy --profile admin --stage prod --yes
+   ```
+
+Use the same profile and stage for later deployments. The `admin` profile is the
+connected profile on this machine. Removing an entry and redeploying removes its
+webhook. An empty list disables enrollment but keeps the Worker deployed.
 
 Alchemy reads both credentials with Effect `Config.Redacted` during Worker
 initialization and binds them as Cloudflare secrets. It generates and retains a
@@ -75,7 +111,27 @@ chat completions and need a price entry in `src/Spending.ts`.
 
 ## Current verification limits
 
-The local HTTP adapter tests, source snapshot tests, typecheck, and live Muse
-smoke test pass. Cloudflare deployment and alarm recovery have not been exercised.
+`pnpm check` runs TypeScript and 10 behavior tests with `@effect/vitest`. The
+tests cover archive extraction, source snapshots, exclusions, report rendering,
+GitHub review pagination, Responses transport, and budget boundaries.
+
+The live Muse smoke test passes. A full dry run of parserator#23 at `da23550`
+reviewed all 21 changed files and completed in about 157 seconds. It reported the
+text-buffer overwrite at `src/incremental-input.ts:13`, with no pending paths and
+about $0.012 in estimated usage.
+
+The production Worker is deployed at
+`https://reviewer-reviewer-prod-jrphhhng7aafhnju.texoport.workers.dev`. Parserator is
+enrolled. A signed GitHub webhook triggered a Durable Object review of temporary
+[PR #25](https://github.com/saiashirwad/parserator/pull/25). The deployed model
+posted the correct blocking inline finding in about 15 seconds. A subsequent
+`/review` trigger did not post a duplicate. The PR was closed without merging,
+and its temporary branch was deleted.
+
+Health, webhook signature enforcement, alarm-driven execution, model calls, and
+GitHub posting have been exercised. Forced-eviction recovery and retry exhaustion
+have not been tested.
+
 The five-minute review limit comes from `@yielded/agent-pr-review`; the package
-currently exposes no duration override. No repository code is executed.
+currently exposes no duration override. Interrupted reviews restart rather than
+resume model turns. The reviewer reads repository source but does not execute it.

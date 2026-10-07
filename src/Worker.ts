@@ -2,9 +2,9 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHubEvents from "alchemy/GitHub";
 import { Config, Effect, type Redacted } from "effect";
-import { GITHUB_TOKEN, OPENCODE_API_KEY } from "./config/bindings.ts";
 import { HttpServerResponse } from "effect/http";
 import config from "../reviewer.config.ts";
+import { GITHUB_TOKEN, OPENCODE_API_KEY } from "./config/bindings.ts";
 import type { PullRef } from "./GitHub.ts";
 import { key, PullRequestReview } from "./PullRequestReview.ts";
 import * as Settings from "./Settings.ts";
@@ -15,7 +15,7 @@ const TRUSTED_COMMENTERS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 export default Cloudflare.Worker(
   "Reviewer",
   { main: import.meta.url },
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     // Read during init so Alchemy binds both secrets onto the Worker; the
     // Durable Object reads the same bindings at runtime.
     yield* Config.Redacted(GITHUB_TOKEN).pipe(Effect.orDie);
@@ -24,7 +24,9 @@ export default Cloudflare.Worker(
     const reviews = yield* PullRequestReview;
     // Generated once and kept in Alchemy state. The event source resolves Outputs
     // (it calls Output.asOutput on the secret), but its prop is typed as a plain Redacted.
-    const secret = (yield* Alchemy.makeRandom("WebhookSecret")) as unknown as Redacted.Redacted<string>;
+    const secret = (yield* Alchemy.makeRandom("WebhookSecret")) as unknown as Redacted.Redacted<
+      string
+    >;
 
     for (const entry of config.repos) {
       const settings = Settings.resolve(config, entry);
@@ -42,7 +44,7 @@ export default Cloudflare.Worker(
           secret,
         },
         (event) => {
-          const dispatch = Effect.gen(function* () {
+          const dispatch = Effect.gen(function*() {
             switch (event.name) {
               case "pull_request": {
                 const { action, pull_request } = event.payload;
@@ -59,11 +61,10 @@ export default Cloudflare.Worker(
               }
               case "issue_comment": {
                 const { action, comment, issue } = event.payload;
-                const requested =
-                  action === "created" &&
-                  issue.pull_request !== undefined &&
-                  comment.body.trim().startsWith("/review") &&
-                  TRUSTED_COMMENTERS.has(comment.author_association);
+                const requested = action === "created"
+                  && issue.pull_request !== undefined
+                  && comment.body.trim().startsWith("/review")
+                  && TRUSTED_COMMENTERS.has(comment.author_association);
                 if (!requested) return;
                 const ref = pull(issue.number);
                 return yield* reviews.getByName(key(ref)).enqueue({ ...ref, settings });
@@ -73,7 +74,7 @@ export default Cloudflare.Worker(
 
           return dispatch.pipe(
             Effect.catchCause((cause) =>
-              Effect.logError("Could not dispatch webhook", { delivery: event.id, cause }),
+              Effect.logError("Could not dispatch webhook", { delivery: event.id, cause })
             ),
           );
         },
