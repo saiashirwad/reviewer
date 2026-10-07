@@ -1,0 +1,35 @@
+{
+  "name": "reviewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "check": "pnpm typecheck && pnpm test",
+    "smoke": "node scripts/smoke.ts",
+    "review": "node scripts/dry-run.ts",
+    "deploy": "alchemy deploy",
+    "dev": "alchemy dev",
+    "destroy": "alchemy destroy"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@effect/ai-openai": "4.0.1",
+    "@effect/ai-openai-compat": "4.0.1",
+    "@yielded/agent": "0.1.0-beta.167",
+    "@yielded/agent-platform-cloudflare": "0.1.0-beta.167",
+    "@yielded/agent-pr-review": "0.1.0-beta.167",
+    "effect": "4.0.1",
+    "effect-cf": "^0.53.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "@effect/platform-node": "4.0.1",
+    "@types/node": "^24.19.1",
+    "alchemy": "2.0.0-beta.81",
+    "typescript": "^7.0.2"
+  }
+}

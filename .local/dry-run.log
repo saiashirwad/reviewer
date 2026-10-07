@@ -1,0 +1,61 @@
+[09:18:03.937] INFO (#2): Copied head snapshot { headSha: '5e9d27b5889255cf944909e7dd7937325dde5c4a', files: 74 }
+[09:18:03.940] INFO (#2): Reviewing {
+  pull: 'saiashirwad/parserator#23',
+  headSha: '5e9d27b5889255cf944909e7dd7937325dde5c4a',
+  model: 'deepseek-v4.1-flash',
+  changes: 21,
+  unreviewed: 0
+}
+[09:18:08.404] INFO (#49): Review diff read {
+  read: 1,
+  offset: 0,
+  end: 32000,
+  totalChars: 89352,
+  alreadyDelivered: false,
+  firstUnreadOffset: 0
+}
+[09:18:11.459] INFO (#68): Review diff read {
+  read: 2,
+  offset: 32000,
+  end: 64000,
+  totalChars: 89352,
+  alreadyDelivered: false,
+  firstUnreadOffset: 32000
+}
+[09:18:13.901] INFO (#89): Review diff read {
+  read: 3,
+  offset: 64000,
+  end: 89352,
+  totalChars: 89352,
+  alreadyDelivered: false,
+  firstUnreadOffset: 64000
+}
+[09:23:03.962] WARN (#2): Review stopped before completion { failureType: 'AgentPolicyError', policyLimit: 'duration' }
+[09:23:03.963] INFO (#2): Review navigation totals {
+  diffReads: 3,
+  repeatedDiffReads: 0,
+  statusReads: 0,
+  notesUpdates: 0,
+  pendingPaths: 0,
+  firstUnreadOffset: 89352,
+  totalChars: 89352,
+  compactions: 0
+}
+
+================================================================================
+Review for 5e9d27b5889255cf944909e7dd7937325dde5c4a
+================================================================================
+<!-- reviewer:5e9d27b5889255cf944909e7dd7937325dde5c4a -->
+
+**Review** · `deepseek-v4.1-flash` · 5e9d27b
+
+The review reached its five-minute deadline. Recorded findings are preserved; the remaining change has not been verified.
+
+<sub>9 turns · 232.5k input (220.8k cached) / 33.1k output tokens · ~$0.100 · incomplete</sub>
+
+Result: {
+  _tag: 'Published',
+  headSha: '5e9d27b5889255cf944909e7dd7937325dde5c4a',
+  findings: 0
+}
+EXIT 0
